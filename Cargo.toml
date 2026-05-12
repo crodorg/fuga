@@ -1,0 +1,61 @@
+[package]
+name = "fuga"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Terminal-native music library aggregator"
+authors = ["Chris Rodriguez <github@crod.org>"]
+repository = "https://github.com/crodorg/fuga"
+homepage = "https://github.com/crodorg/fuga"
+documentation = "https://github.com/crodorg/fuga/blob/main/docs/architecture.md"
+readme = "README.md"
+keywords = ["music", "tui", "spotify", "mpd", "ratatui"]
+categories = ["command-line-utilities", "multimedia::audio"]
+rust-version = "1.87"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+futures = "0.3"
+async-trait = "0.1"
+
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
+
+mpd_client = "1"
+
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+dirs = "5"
+clap = { version = "4", features = ["derive"] }
+ratatui-image = { version = "10.0.8", default-features = false, features = ["crossterm", "image-defaults"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+lru = "0.18.0"
+sha2 = "0.11.0"
+reqwest = { version = "0.13.3", default-features = false, features = ["rustls", "json"] }
+bytes = "1.11.1"
+serde_json = "1.0.149"
+rspotify = { version = "0.16.1", default-features = false, features = ["client-reqwest", "reqwest-rustls-tls"] }
+librespot = { version = "0.8.0", default-features = false, features = ["rodio-backend", "rustls-tls-native-roots"] }
+librespot-metadata = { version = "0.8.0", default-features = false, features = ["rustls-tls-native-roots"] }
+# Needed to decode raw rootlist bytes from `SpClient::get_rootlist` into the
+# generated `SelectedListContent` protobuf type (librespot doesn't expose a
+# typed wrapper for the rootlist endpoint).
+protobuf = "3"
+url = "2.5.8"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+open = "5.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+mpris-server = { version = "0.10", features = ["tokio"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -1,0 +1,8 @@
+/target
+/fuga-v*-linux-*
+/fuga-v*-linux-*.sha256
+CLAUDE.md
+.claude/
+*.local.json
+*.local.toml
+dist/

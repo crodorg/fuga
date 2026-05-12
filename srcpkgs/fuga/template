@@ -1,0 +1,21 @@
+# Template file for 'fuga'
+pkgname=fuga
+version=0.1.0
+revision=1
+build_style=cargo
+hostmakedepends="pkg-config"
+makedepends="alsa-lib-devel pulseaudio-devel openssl-devel"
+depends="mpd"
+short_desc="Terminal-native music library aggregator"
+maintainer="Chris Rodriguez <github@crod.org>"
+license="MIT"
+homepage="https://github.com/crodorg/fuga"
+distfiles="https://github.com/crodorg/fuga/archive/refs/tags/v${version}.tar.gz"
+checksum=SKIP
+
+post_install() {
+	vlicense LICENSE 2>/dev/null || :
+	vmkdir usr/share/doc/${pkgname}
+	vinstall README.md  644 usr/share/doc/${pkgname}
+	vinstall examples/config.toml 644 usr/share/doc/${pkgname}/examples
+}

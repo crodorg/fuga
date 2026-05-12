@@ -1,0 +1,161 @@
+# fuga config — copy to ~/.config/fuga/config.toml and edit.
+# Every section is optional; missing values fall back to the defaults shown.
+
+[mpd]
+host = "localhost"
+port = 6600
+# password = "hunter2"
+# Filesystem root for the MPD library (mirrors mpd.conf's `music_directory`).
+# Used by the sidecar-art fallback (cover.jpg / folder.jpg in a track's
+# parent dir) when MPD's albumart/readpicture returns nothing.
+# music_directory = "/home/you/music"
+
+[ui]
+thumb_mode = "kitty"             # kitty | sixel | halfblocks | off  (sixel: now-playing art only, no row thumbs)
+# T cycles through this list. Default = ["kitty","off"] for one-press
+# toggle. Add "sixel" or "halfblocks" if you want to flip into them too.
+thumb_cycle = ["kitty", "off"]
+thumb_cells = 2                  # cells per inline thumbnail (2 = ~32px square)
+fps_cap = 30                     # render-rate ceiling
+
+# Tab list. Recognized ids: queue, albums, artists, playlists, stations,
+# radio, somafm, spotify, search. Omit to let fuga derive a sensible
+# default from the sources you have enabled.
+# tabs = ["queue", "albums", "artists", "playlists", "stations", "spotify", "search"]
+tab_alignment       = "center"    # center | left | right
+multi_source_layout = "grouped"   # grouped | interleaved_dedupe | interleaved
+radio_split         = false       # true → separate Radio + SomaFM tabs
+
+# Color theme. `name` selects a built-in preset; `[theme.colors]` lets you
+# override individual tokens with hex (#RRGGBB) or named ANSI colors.
+[theme]
+name = "default"                 # default | dracula | nord | gruvbox
+
+# [theme.colors]
+# accent       = "#bd93f9"
+# selection_bg = "#44475a"
+# header       = "yellow"
+# progress     = "#50fa7b"
+
+[somafm]
+enabled = true
+cache_ttl_hours = 6              # channels.json cache lifetime
+
+[spotify]
+enabled = false                  # set true after `fuga --spotify-auth`
+client_id = ""                   # from developer.spotify.com/dashboard
+device_name = "fuga"             # shows up as Spotify Connect device
+# Stream quality. Recognized values:
+#   "low"      → OGG 96 kbps
+#   "normal"   → OGG 160 kbps
+#   "high"     → OGG 320 kbps
+#   "lossless" / "flac" / "hifi" → falls back to OGG 320 kbps
+#                                   (librespot 0.8 has no HiFi decoder yet —
+#                                    fuga logs a warn at startup so you know)
+# Default is "lossless" so users with HiFi tier get the highest currently
+# supported stream automatically. Legacy numeric values ("96", "160", "320")
+# still parse via `bitrate = ...`.
+quality = "lossless"
+volume_normalisation = true
+redirect_port = 8888             # OAuth PKCE callback port
+
+# YouTube (v0.2.0). Disabled by default. Requires `yt-dlp` installed
+# on PATH (or set yt_dlp_bin to an absolute path). fuga shells out — it
+# never speaks to YouTube directly. See README "Legal / acknowledgments"
+# for ToS notes; the v0.2 scope is search + play + seek + local
+# bookmarking + download to disk.
+[youtube]
+enabled = false
+yt_dlp_bin = "yt-dlp"
+
+# Lifecycle hooks — shell commands invoked on key events. Each receives state
+# via FUGA_* environment variables:
+#   on_track_change : FUGA_URI, FUGA_SOURCE, FUGA_TITLE, FUGA_ARTIST, FUGA_ALBUM
+#   on_source_switch: FUGA_SOURCE_FROM, FUGA_SOURCE_TO
+#   on_startup      : (no env)
+[hooks]
+# on_track_change  = "notify-send 'Now playing' \"$FUGA_TITLE — $FUGA_ARTIST\""
+# on_source_switch = "logger fuga: $FUGA_SOURCE_FROM -> $FUGA_SOURCE_TO"
+# on_startup       = "echo started >> ~/.cache/fuga/runs.log"
+
+# Optional XDG overrides — leave blank to use ~/.cache/fuga, ~/.local/share/fuga
+[paths]
+# cache_dir = "/path/to/cache"
+# data_dir  = "/path/to/data"
+
+# Internet-radio stations. Repeat the [[radio]] block per station.
+# [[radio]]
+# name    = "Radio Paradise"
+# url     = "https://stream.radioparadise.com/aac-320"
+# art_url = "https://radioparadise.com/graphics/logo-rp.png"
+
+# -----------------------------------------------------------------------------
+# Keybindings
+#
+# Global keys: action_name = "key". Modifier prefixes "C-" ctrl, "S-" shift,
+# "A-" alt. Special names: Enter, Esc, Tab, BackTab, Space, Backspace,
+# Up/Down/Left/Right, PageUp/PageDown, Home, End, Delete. Single-character keys
+# are written as themselves: "j", "+", "/". Capital letters imply shift.
+#
+# Available actions:
+#   quit, down, up, page_down, page_up, top, bottom,
+#   next_tab, prev_tab, tab_1..tab_9 (or tab:N for arbitrary),
+#   activate, enqueue, back, jump_roots,
+#   play_pause, next_track, prev_track, stop, refresh,
+#   toggle_thumb, vol_up, vol_down,
+#   toggle_shuffle, cycle_repeat, open_sort,
+#   focus_search, focus_command, toggle_help, toggle_like,
+#   open_devices,
+#   source_jump:<scheme>           # e.g. source_jump:spotify
+# -----------------------------------------------------------------------------
+
+[keybindings.global]
+quit         = "q"
+down         = "j"
+up           = "k"
+page_down    = "C-d"
+page_up      = "C-u"
+bottom       = "G"
+next_tab     = "Tab"
+prev_tab     = "BackTab"
+tab_1        = "1"
+tab_2        = "2"
+tab_3        = "3"
+tab_4        = "4"
+tab_5        = "5"
+tab_6        = "6"
+tab_7        = "7"
+tab_8        = "8"
+tab_9        = "9"
+focus_search = "/"
+focus_command = ":"
+activate     = "Enter"
+enqueue      = "a"
+back         = "Esc"
+back_alt     = "h"
+jump_roots   = "H"
+play_pause   = "Space"
+next_track   = "n"
+prev_track   = "p"
+stop         = "s"
+refresh      = "r"
+toggle_thumb = "T"
+vol_up       = "+"
+vol_down     = "-"
+toggle_shuffle = "z"
+cycle_repeat   = "x"
+open_sort      = "o"
+toggle_help    = "?"
+toggle_like    = "L"
+open_devices   = "d"
+
+# Leader chords — pressing the leader key opens a which-key popup listing the
+# continuations. `g` is the default leader; add new leaders with their own
+# [keybindings.leaders.<key>] tables.
+[keybindings.leaders.g]
+g = { label = "top",     action = "top" }
+l = { label = "Local",   action = "source_jump:local" }
+s = { label = "Spotify", action = "source_jump:spotify" }
+r = { label = "Radio",   action = "source_jump:radio" }
+f = { label = "SomaFM",  action = "source_jump:somafm" }
+y = { label = "YouTube", action = "source_jump:youtube" }
