@@ -11,7 +11,7 @@ local files (via MPD), internet radio, SomaFM, Spotify, YouTube. Inline
 album-art thumbnails on every row when run in a Kitty-graphics-capable
 terminal.
 
-![fuga in patched st showing Liked Songs](docs/screenshot.png)
+![fuga tour: local, Spotify, YouTube, SomaFM, with inline album art](docs/demo.gif)
 
 ## Features
 

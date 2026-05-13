@@ -6,3 +6,4 @@ CLAUDE.md
 *.local.json
 *.local.toml
 dist/
+docs/demo.mp4
