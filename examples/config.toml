@@ -26,14 +26,31 @@ fps_cap = 30                     # render-rate ceiling
 # Clamped to [20, 100] / [15, 100]. Sane on terminals from 80x24 upward.
 art_height_pct = 70
 art_width_pct  = 40
+# Start fuga with the art panel collapsed (sits inside the bottom-bar
+# height) instead of expanded. Once you toggle the panel manually (left-
+# click), the persisted state in state.json wins over this default.
+# art_collapsed = false
 
-# Tab list. Recognized ids: queue, albums, artists, playlists, stations,
-# radio, somafm, spotify, search. Omit to let fuga derive a sensible
-# default from the sources you have enabled.
-# tabs = ["queue", "albums", "artists", "playlists", "stations", "spotify", "search"]
 tab_alignment       = "center"    # center | left | right
 multi_source_layout = "grouped"   # grouped | interleaved_dedupe | interleaved
 radio_split         = false       # true → separate Radio + SomaFM tabs
+
+# Per-source tab list. `t` cycles the active source and the tab bar
+# swaps to that source's list. Map keys are source schemes; values are
+# ordered tab ids. Omit a source to use its hard-coded default.
+# Recognized tab ids: queue, directories, albums, artists, playlists,
+# stations, radio, somafm, spotify, podcasts, youtube, search.
+# Unknown ids are skipped with a warning.
+#
+# NOTE: [ui.tabs] is a TOML sub-table — keep it the LAST block in [ui].
+# Flat [ui] keys placed below it would be parsed as children of
+# [ui.tabs] and fail to deserialize.
+# [ui.tabs]
+# local   = ["directories", "albums", "playlists", "queue", "search"]
+# spotify = ["spotify", "albums", "artists", "playlists", "podcasts", "queue", "search"]
+# youtube = ["youtube", "queue", "search"]
+# radio   = ["stations", "queue"]
+# somafm  = ["stations", "queue"]
 
 # Color theme. `name` selects a built-in preset; `[theme.colors]` lets you
 # override individual tokens with hex (#RRGGBB) or named ANSI colors.
@@ -76,6 +93,9 @@ redirect_port = 8888             # OAuth PKCE callback port
 [youtube]
 enabled = false
 yt_dlp_bin = "yt-dlp"
+# Where yt-dlp writes downloaded audio. Omit to fall back to
+# [mpd] music_directory, then XDG Downloads, then ~/Downloads.
+# download_dir = "~/Music/youtube"
 
 # Lifecycle hooks — shell commands invoked on key events. Each receives state
 # via FUGA_* environment variables:
@@ -106,56 +126,87 @@ yt_dlp_bin = "yt-dlp"
 # Up/Down/Left/Right, PageUp/PageDown, Home, End, Delete. Single-character keys
 # are written as themselves: "j", "+", "/". Capital letters imply shift.
 #
+# Every default is listed below as an explicit binding — change a value to
+# rebind, or comment out the line to fall back to the compile-time default.
+#
 # Available actions:
-#   quit, down, up, page_down, page_up, top, bottom,
-#   next_tab, prev_tab, tab_1..tab_9 (or tab:N for arbitrary),
-#   activate, enqueue, back, jump_roots,
-#   play_pause, next_track, prev_track, stop, refresh,
-#   toggle_thumb, vol_up, vol_down,
-#   toggle_shuffle, cycle_repeat, open_sort,
-#   focus_search, focus_command, toggle_help, toggle_like,
-#   open_devices,
-#   source_jump:<scheme>           # e.g. source_jump:spotify
+#   Navigation:   quit, down, up, page_down, page_up, top, bottom,
+#                 next_tab, next_tab_alt, prev_tab, prev_tab_alt,
+#                 tab_1..tab_9 (or tab:N for arbitrary)
+#   View/search:  activate, activate_alt, enqueue, back, back_alt,
+#                 focus_search, focus_command, filter_in_page, refresh,
+#                 open_sort, jump_roots
+#   Playback:     play_pause, next_track, prev_track, stop, seek_back,
+#                 seek_forward, vol_up, vol_down, toggle_shuffle,
+#                 cycle_repeat
+#   Library:      toggle_like, follow_playing, clear_queue,
+#                 remove_from_queue, expand_art, open_action_menu,
+#                 toggle_pin, download_hovered
+#   Sources/UI:   cycle_source, toggle_thumb, open_devices, toggle_help,
+#                 source_jump:<scheme>      # e.g. source_jump:spotify
 # -----------------------------------------------------------------------------
 
 [keybindings.global]
-quit         = "q"
-down         = "j"
-up           = "k"
-page_down    = "C-d"
-page_up      = "C-u"
-bottom       = "G"
-next_tab     = "Tab"
-prev_tab     = "BackTab"
-tab_1        = "1"
-tab_2        = "2"
-tab_3        = "3"
-tab_4        = "4"
-tab_5        = "5"
-tab_6        = "6"
-tab_7        = "7"
-tab_8        = "8"
-tab_9        = "9"
-focus_search = "/"
-focus_command = ":"
-activate     = "Enter"
-enqueue      = "a"
-back         = "Esc"
-back_alt     = "h"
-play_pause   = "Space"
-next_track   = "n"
-prev_track   = "p"
-stop         = "s"
-refresh      = "r"
-toggle_thumb = "T"
-vol_up       = "+"
-vol_down     = "-"
-toggle_shuffle = "z"
-cycle_repeat   = "x"
-open_sort      = "o"
-toggle_help    = "?"
-toggle_like    = "F"
-open_devices   = "d"
+# Navigation
+quit              = "q"
+down              = "j"
+up                = "k"
+page_down         = "C-d"
+page_up           = "C-u"
+bottom            = "G"
+next_tab          = "Tab"
+prev_tab          = "BackTab"
+next_tab_alt      = "C-n"
+prev_tab_alt      = "C-p"
+tab_1             = "1"
+tab_2             = "2"
+tab_3             = "3"
+tab_4             = "4"
+tab_5             = "5"
+tab_6             = "6"
+tab_7             = "7"
+tab_8             = "8"
+tab_9             = "9"
+
+# View / search
+activate          = "Enter"
+activate_alt      = "l"
+enqueue           = "a"
+back              = "Esc"
+back_alt          = "h"
+focus_search      = "s"
+focus_command     = ":"
+filter_in_page    = "/"
+refresh           = "r"
+open_sort         = "o"
+
+# Playback
+play_pause        = "Space"
+next_track        = "n"
+prev_track        = "p"
+stop              = "S"
+seek_back         = "H"
+seek_forward      = "L"
+vol_up            = "+"
+vol_down          = "-"
+toggle_shuffle    = "z"
+cycle_repeat      = "x"
+
+# Library / queue
+toggle_like       = "F"
+follow_playing    = "f"
+clear_queue       = "C"
+remove_from_queue = "D"
+expand_art        = "v"
+open_action_menu  = "m"
+toggle_pin        = "P"
+download_hovered  = "Y"
+
+# Sources / UI
+cycle_source      = "t"
+toggle_thumb      = "T"
+open_devices      = "d"
+toggle_help       = "?"
 
 # Leader chords — pressing the leader key opens a which-key popup listing the
 # continuations. `g` is the default leader; add new leaders with their own

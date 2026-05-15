@@ -23,8 +23,9 @@ terminal.
   `MusicSource`
 - Embedded `librespot` for Spotify (no `spotifyd` subprocess) and `yt-dlp`
   shell-out for YouTube (fuga itself never talks to Google)
-- Per-source theme palette and a configurable tab bar that merges content
-  across sources
+- Per-source theme palette and a per-source tab bar — `t` cycles the
+  active source and the tab list flips with it; each mode is
+  user-customizable via `[ui.tabs]`
 - See [docs/architecture.md](docs/architecture.md) for the source-plugin
   design and audio-routing notes
 
@@ -80,21 +81,44 @@ XDG layout just need to create `~/.config/fuga/` before first run.
 
 ### Tab bar
 
-The top tab bar is rmpc-style: a list of category tabs that **merge content
-across sources**. Configure which tabs show via `[ui] tabs`; if you omit it
-fuga derives a sensible default from the sources you have enabled.
+The top tab bar swaps **per source**. `t` cycles the active source and
+the tab list flips to that source's layout. Each mode ships a sensible
+default; override any of them via `[ui.tabs]`:
 
 ```toml
 [ui]
-tabs = ["queue", "albums", "artists", "playlists", "stations", "spotify", "search"]
 tab_alignment = "center"          # center | left | right
-multi_source_layout = "grouped"   # how merged source lists render
-radio_split = false               # true → separate Radio + SomaFM tabs
+radio_split   = false             # true → separate Radio + SomaFM tabs
+
+# Keep [ui.tabs] as the LAST block under [ui] — it's a TOML sub-table,
+# so any flat [ui] keys placed below it would be parsed into it.
+[ui.tabs]
+local   = ["directories", "albums", "playlists", "queue", "search"]
+spotify = ["spotify", "albums", "artists", "playlists", "podcasts", "queue", "search"]
+youtube = ["youtube", "queue", "search"]
+radio   = ["stations", "queue"]
+somafm  = ["stations", "queue"]
 ```
 
-Recognized tab ids: `queue`, `albums`, `artists`, `playlists`, `stations`,
-`radio`, `somafm`, `spotify`, `search`. Tabs whose backing sources aren't
-enabled hide automatically.
+Recognized tab ids: `queue`, `directories`, `albums`, `artists`,
+`playlists`, `stations`, `radio`, `somafm`, `spotify`, `podcasts`,
+`youtube`, `search`. Sources omitted from `[ui.tabs]` (or with empty /
+all-invalid lists) use the hard-coded default, so you can't lock
+yourself out of navigation.
+
+### Now-playing art panel
+
+The bottom-right art panel resizes via two percentage knobs. Vertical
+100% sits flush under the tab bar; horizontal 100% runs from the
+24-cell text margin to the right edge. Aspect is preserved — whichever
+axis hits its limit first constrains the other.
+
+```toml
+[ui]
+art_height_pct = 70   # clamped to [20, 100]
+art_width_pct  = 40   # clamped to [15, 100]
+# art_collapsed = false   # start with the panel shrunk into the bottom bar
+```
 
 ### Spotify setup
 
@@ -110,34 +134,48 @@ PulseAudio or PipeWire (both expose a `pulse` device that mixes for you).
 
 ## Keys (defaults)
 
-| Key            | Action                                        |
-|----------------|-----------------------------------------------|
-| `q`            | Quit                                          |
-| `j` / `k`      | Down / up                                     |
-| `C-d` / `C-u`  | Page down / up                                |
-| `g g`          | Top                                           |
-| `G`            | Bottom                                        |
-| `Tab` / `S-Tab`| Cycle tabs                                    |
-| `1`–`9`        | Jump to tab N (in configured order)           |
-| `Enter`        | Activate (descend / play)                     |
-| `a`            | Enqueue (add to queue without playing)        |
-| `Esc` / `h`    | Back one level                                |
-| `Space`        | Play / pause                                  |
-| `n` / `p`      | Next / previous track                         |
-| `s`            | Stop                                          |
-| `+` / `-`      | Volume up / down                              |
-| `z`            | Toggle shuffle                                |
-| `x`            | Cycle repeat (off → all → track)              |
-| `o`            | Sort modal                                    |
-| `d`            | Spotify Connect device picker                 |
-| `T`            | Cycle thumbnail mode                          |
-| `r`            | Refresh current view                          |
-| `/`            | Focus search input                            |
-| `:`            | Focus command bar                             |
-| `?`            | Toggle help overlay                           |
-| `L`            | Like / unlike current track (Spotify)         |
+| Key                  | Action                                         |
+|----------------------|------------------------------------------------|
+| `q`                  | Quit                                           |
+| `j` / `k`            | Down / up                                      |
+| `C-d` / `C-u`        | Page down / up                                 |
+| `g g`                | Top                                            |
+| `G`                  | Bottom                                         |
+| `Tab` / `S-Tab`      | Cycle tabs                                     |
+| `C-n` / `C-p`        | Cycle tabs (alt)                               |
+| `1`–`9`              | Jump to tab N                                  |
+| `Enter` / `l`        | Activate (descend / play)                      |
+| `a`                  | Enqueue (add to queue without playing)         |
+| `Esc` / `h`          | Back one level                                 |
+| `Space`              | Play / pause                                   |
+| `n` / `p`            | Next / previous track                          |
+| `H` / `L`            | Seek -10s / +10s                               |
+| `S`                  | Stop                                           |
+| `+` / `-`            | Volume up / down                               |
+| `z`                  | Toggle shuffle                                 |
+| `x`                  | Cycle repeat (off → all → track)               |
+| `o`                  | Sort modal                                     |
+| `d`                  | Spotify Connect device picker                  |
+| `T`                  | Cycle thumbnail mode                           |
+| `t`                  | Cycle active source (Local → Spotify → …)      |
+| `r`                  | Refresh current view                           |
+| `s`                  | Focus search input                             |
+| `/`                  | Filter rows in current page                    |
+| `:`                  | Focus command bar                              |
+| `?`                  | Toggle help overlay                            |
+| `F`                  | Like / unlike current track (Spotify)          |
+| `f`                  | Follow playing track (jump cursor to it)       |
+| `C`                  | Clear queue                                    |
+| `D`                  | Remove hovered row from queue                  |
+| `m`                  | Open contextual action menu                    |
+| `P`                  | Pin / unpin hovered item                       |
+| `v`                  | Expand hovered album art                       |
+| `Y`                  | Download hovered track (YouTube)               |
 
-All keys are user-configurable; see `examples/config.toml`.
+Plus leader chords: `g g` (top) and `g {l,s,r,f,y}` to jump to Local /
+Spotify / Radio / SomaFM / YouTube. All keys are user-configurable —
+the example config lists every default explicitly with grouped
+comments.
 
 **Mouse**:
 - Click a tab label → switch tab
@@ -268,5 +306,6 @@ Google/YouTube; it only invokes the local `yt-dlp` binary. Users are
 responsible for compliance with the
 [YouTube Terms of Service](https://www.youtube.com/static?template=terms),
 including any rules around downloading audio. Downloaded files land in
-your MPD music directory (or `~/Downloads` as a fallback) and are intended
-for personal use. fuga is not affiliated with Google LLC or YouTube.
+`[youtube] download_dir` if you set one, otherwise MPD's
+`music_directory`, otherwise XDG Downloads / `~/Downloads`. fuga is not
+affiliated with Google LLC or YouTube.

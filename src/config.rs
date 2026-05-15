@@ -73,11 +73,14 @@ pub struct UiConfig {
     pub queue_columns: Vec<String>,
     /// Same idea for Library track lists.
     pub library_columns: Vec<String>,
-    /// Configured top-level tab list (rmpc-style category bar). When empty,
-    /// `App::new` derives a default set from the registered sources.
-    /// Recognized ids: queue, albums, artists, playlists, stations, radio,
-    /// somafm, search. Unknown ids are ignored with a warning.
-    pub tabs: Vec<String>,
+    /// Per-source tab override. Keys: source schemes ("local", "spotify",
+    /// "somafm", "radio", "youtube"). Values: ordered list of tab ids to
+    /// show in that mode. Recognized ids: queue, directories, albums,
+    /// artists, playlists, stations, radio, somafm, spotify, podcasts,
+    /// youtube, search. Sources missing from the map (or with empty/all-
+    /// invalid lists) fall back to hard-coded defaults so the user always
+    /// retains a way to navigate.
+    pub tabs: HashMap<String, Vec<String>>,
     /// Tab bar horizontal alignment: "center" | "left" | "right".
     pub tab_alignment: String,
     /// How merged source lists render: "grouped" | "interleaved_dedupe" |
@@ -118,7 +121,7 @@ impl Default for UiConfig {
                 "duration".into(),
             ],
             library_columns: vec!["artist".into(), "album".into(), "title".into()],
-            tabs: Vec::new(),
+            tabs: HashMap::new(),
             tab_alignment: "center".into(),
             multi_source_layout: "grouped".into(),
             radio_split: false,
@@ -238,6 +241,10 @@ pub struct YouTubeConfig {
     pub enabled: bool,
     /// Path to the `yt-dlp` binary. Default `"yt-dlp"` resolves via PATH.
     pub yt_dlp_bin: String,
+    /// Override for where yt-dlp writes downloaded audio. `None` (the
+    /// default) falls back to `[mpd] music_directory`, then XDG
+    /// Downloads, then `~/Downloads`.
+    pub download_dir: Option<PathBuf>,
 }
 
 impl Default for YouTubeConfig {
@@ -245,6 +252,7 @@ impl Default for YouTubeConfig {
         Self {
             enabled: false,
             yt_dlp_bin: "yt-dlp".into(),
+            download_dir: None,
         }
     }
 }
@@ -343,7 +351,7 @@ fn default_global() -> &'static [(&'static str, &'static str)] {
         ("follow_playing", "f"),
         ("clear_queue", "C"),
         ("remove_from_queue", "D"),
-        ("expand_art", "V"),
+        ("expand_art", "v"),
         ("open_action_menu", "m"),
         ("toggle_pin", "P"),
         ("filter_in_page", "/"),

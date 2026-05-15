@@ -280,6 +280,7 @@ impl Category {
             "radio" => Category::Radio,
             "somafm" => Category::SomaFm,
             "spotify" => Category::Spotify,
+            "podcasts" => Category::Podcasts,
             "youtube" => Category::YouTube,
             "search" => Category::Search,
             _ => return None,
