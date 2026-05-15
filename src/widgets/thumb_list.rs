@@ -454,7 +454,15 @@ fn render_track_columns(
     let pad = |w: u16| -> u16 { w.saturating_sub(1).max(1) };
     let artist = truncate_col(&cols.artist, pad(split[0].width));
     let title = truncate_col(&cols.title, pad(split[1].width));
-    let album = truncate_col(&cols.album, pad(split[2].width));
+    // Hide the album cell when it duplicates the title (common when source
+    // metadata is missing — MPD falls back to title-as-album, which renders
+    // as visually identical adjacent columns). Case-insensitive compare so
+    // "Rumours" / "rumours" still collapses.
+    let album = if cols.album.eq_ignore_ascii_case(&cols.title) {
+        String::new()
+    } else {
+        truncate_col(&cols.album, pad(split[2].width))
+    };
     f.render_widget(Paragraph::new(artist).style(style), split[0]);
     f.render_widget(Paragraph::new(title).style(style), split[1]);
     f.render_widget(Paragraph::new(album).style(style), split[2]);
