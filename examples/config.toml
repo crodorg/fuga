@@ -26,6 +26,10 @@ fps_cap = 30                     # render-rate ceiling
 # Clamped to [20, 100] / [15, 100]. Sane on terminals from 80x24 upward.
 art_height_pct = 70
 art_width_pct  = 40
+# Start fuga with the art panel collapsed (sits inside the bottom-bar
+# height) instead of expanded. Once you toggle the panel manually (left-
+# click), the persisted state in state.json wins over this default.
+# art_collapsed = false
 
 # Tab list. Recognized ids: queue, albums, artists, playlists, stations,
 # radio, somafm, spotify, search. Omit to let fuga derive a sensible
@@ -78,7 +82,7 @@ enabled = false
 yt_dlp_bin = "yt-dlp"
 # Where yt-dlp writes downloaded audio. Omit to fall back to
 # [mpd] music_directory, then XDG Downloads, then ~/Downloads.
-# download_dir = "/Users/you/Music/youtube"
+# download_dir = "~/Music/youtube"
 
 # Lifecycle hooks — shell commands invoked on key events. Each receives state
 # via FUGA_* environment variables:
