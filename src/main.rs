@@ -105,6 +105,16 @@ fn main() -> Result<()> {
 /// tokio side consumes `event_rx` in the usual app loop.
 #[cfg(target_os = "macos")]
 fn main() -> Result<()> {
+    // A panic on the async worker thread would otherwise leave NSApp.run
+    // looping on the main thread forever — process stays alive but the app
+    // is dead and only `kill -9` clears it. Forward to the default hook
+    // (so the panic message still prints) then exit the whole process.
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        prev(info);
+        std::process::exit(101);
+    }));
+
     let (event_tx, event_rx) =
         tokio::sync::mpsc::unbounded_channel::<mpris::MprisEvent>();
     let (command_tx, _command_rx) =

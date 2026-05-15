@@ -8,9 +8,12 @@
 //!
 //! The split (see `main.rs`):
 //!
-//!   thread 0 (real main): NSApp with `Prohibited` activation policy →
-//!     no dock icon, no foreground stealing (the bug that bit the previous
-//!     souvlaki attempt), purely a sink for remote-command callbacks.
+//!   thread 0 (real main): NSApp with `Accessory` activation policy →
+//!     no dock icon and no foreground activation (so the terminal keeps
+//!     keyboard focus — the bug that bit the previous souvlaki attempt),
+//!     but still a real app to the system, which is the level needed for
+//!     `MPRemoteCommandCenter` to route remote-command events to us.
+//!     Purely a sink for those callbacks.
 //!
 //!   thread "fuga-async": tokio multi-thread runtime → `async_main`.
 //!     Receives `MprisEvent`s through the same `UnboundedReceiver` Linux
