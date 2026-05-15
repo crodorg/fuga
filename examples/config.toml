@@ -31,13 +31,26 @@ art_width_pct  = 40
 # click), the persisted state in state.json wins over this default.
 # art_collapsed = false
 
-# Tab list. Recognized ids: queue, albums, artists, playlists, stations,
-# radio, somafm, spotify, search. Omit to let fuga derive a sensible
-# default from the sources you have enabled.
-# tabs = ["queue", "albums", "artists", "playlists", "stations", "spotify", "search"]
 tab_alignment       = "center"    # center | left | right
 multi_source_layout = "grouped"   # grouped | interleaved_dedupe | interleaved
 radio_split         = false       # true → separate Radio + SomaFM tabs
+
+# Per-source tab list. `t` cycles the active source and the tab bar
+# swaps to that source's list. Map keys are source schemes; values are
+# ordered tab ids. Omit a source to use its hard-coded default.
+# Recognized tab ids: queue, directories, albums, artists, playlists,
+# stations, radio, somafm, spotify, podcasts, youtube, search.
+# Unknown ids are skipped with a warning.
+#
+# NOTE: [ui.tabs] is a TOML sub-table — keep it the LAST block in [ui].
+# Flat [ui] keys placed below it would be parsed as children of
+# [ui.tabs] and fail to deserialize.
+# [ui.tabs]
+# local   = ["directories", "albums", "playlists", "queue", "search"]
+# spotify = ["spotify", "albums", "artists", "playlists", "podcasts", "queue", "search"]
+# youtube = ["youtube", "queue", "search"]
+# radio   = ["stations", "queue"]
+# somafm  = ["stations", "queue"]
 
 # Color theme. `name` selects a built-in preset; `[theme.colors]` lets you
 # override individual tokens with hex (#RRGGBB) or named ANSI colors.

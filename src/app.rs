@@ -131,6 +131,10 @@ impl Default for CategoryState {
 pub struct App {
     /// Configured visible tab list. Index `active_tab_idx` selects the active.
     pub tabs: Vec<Category>,
+    /// Per-source-scheme tab override map from `[ui.tabs]`. Consulted on
+    /// every `set_mode()` so the bar swaps to the user's mode-specific
+    /// list when they hit `t`.
+    pub tab_overrides: HashMap<String, Vec<String>>,
     pub active_tab_idx: usize,
     pub tab_alignment: TabAlignment,
     /// Per-browse-category state. Queue / Search keep their own fields.
@@ -358,6 +362,7 @@ impl App {
         base_theme: Theme,
         hooks: Hooks,
         tabs: Vec<Category>,
+        tab_overrides: HashMap<String, Vec<String>>,
         tab_alignment: TabAlignment,
         active_source: SourceMode,
         available_modes: Vec<SourceMode>,
@@ -372,6 +377,7 @@ impl App {
         let (wake_tx, wake_rx) = mpsc::unbounded_channel();
         let app = Self {
             tabs,
+            tab_overrides,
             active_tab_idx: 0,
             tab_alignment,
             category_states,
@@ -533,7 +539,7 @@ impl App {
         }
         self.active_source = mode;
         self.theme = self.base_theme.clone().with_source_accent(mode);
-        self.tabs = crate::tabs_for_mode(mode);
+        self.tabs = crate::tabs_for_mode(mode, &self.tab_overrides);
         // Make sure every browse tab in the new list has a CategoryState slot.
         for c in &self.tabs {
             if c.is_browse() {

@@ -354,7 +354,7 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
         .first()
         .copied()
         .unwrap_or(crate::types::SourceMode::Local);
-    let tabs = tabs_for_mode(active_source);
+    let tabs = tabs_for_mode(active_source, &config.ui.tabs);
     let theme = base_theme.clone().with_source_accent(active_source);
     // Build the T-cycle list: every configured entry parsed into a ThumbMode,
     // de-duped, with the startup mode appended if missing so we always start
@@ -385,6 +385,7 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
         base_theme,
         hooks,
         tabs,
+        config.ui.tabs.clone(),
         tab_alignment,
         active_source,
         modes,
@@ -439,11 +440,39 @@ pub fn available_modes(dispatcher: &Dispatcher) -> Vec<crate::types::SourceMode>
         .collect()
 }
 
-/// Tab list for a given source mode. Replaces the prior config-driven
-/// `resolve_tabs` — when the user toggles `t`, the entire tab bar swaps to
-/// the new mode's set. `[ui] tabs` is no longer honored.
-pub fn tabs_for_mode(mode: crate::types::SourceMode) -> Vec<crate::types::Category> {
+/// Tab list for a given source mode. Consults `[ui.tabs]` overrides
+/// first — if the user mapped this mode's scheme to a list, that wins
+/// after dropping unknown ids. Otherwise the hard-coded default below
+/// applies. When the user toggles `t`, the entire tab bar swaps to
+/// whatever the new mode resolves to.
+pub fn tabs_for_mode(
+    mode: crate::types::SourceMode,
+    overrides: &std::collections::HashMap<String, Vec<String>>,
+) -> Vec<crate::types::Category> {
     use crate::types::{Category, SourceMode};
+    if let Some(ids) = overrides.get(mode.scheme()) {
+        let resolved: Vec<Category> = ids
+            .iter()
+            .filter_map(|id| {
+                let c = Category::from_id(id);
+                if c.is_none() {
+                    tracing::warn!(
+                        "ui.tabs.{}: unknown tab id {:?} — skipping",
+                        mode.scheme(),
+                        id
+                    );
+                }
+                c
+            })
+            .collect();
+        if !resolved.is_empty() {
+            return resolved;
+        }
+        tracing::warn!(
+            "ui.tabs.{}: override resolved to zero valid tabs — using default",
+            mode.scheme()
+        );
+    }
     match mode {
         SourceMode::Local => vec![
             Category::Directories,
