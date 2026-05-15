@@ -238,6 +238,10 @@ pub struct YouTubeConfig {
     pub enabled: bool,
     /// Path to the `yt-dlp` binary. Default `"yt-dlp"` resolves via PATH.
     pub yt_dlp_bin: String,
+    /// Override for where yt-dlp writes downloaded audio. `None` (the
+    /// default) falls back to `[mpd] music_directory`, then XDG
+    /// Downloads, then `~/Downloads`.
+    pub download_dir: Option<PathBuf>,
 }
 
 impl Default for YouTubeConfig {
@@ -245,6 +249,7 @@ impl Default for YouTubeConfig {
         Self {
             enabled: false,
             yt_dlp_bin: "yt-dlp".into(),
+            download_dir: None,
         }
     }
 }

@@ -323,6 +323,7 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
             config.youtube.yt_dlp_bin.clone(),
             data_dir,
             config.mpd.music_directory.clone(),
+            config.youtube.download_dir.clone(),
         ));
         dispatcher.register(youtube as Arc<dyn MusicSource>);
     }

@@ -93,8 +93,8 @@ pub struct YouTubeSource {
     /// / art rather than appearing as a blank row in the Saved view.
     memo: RwLock<HashMap<String, SavedTrack>>,
     /// Destination for downloads. Resolved at construction: prefer the
-    /// configured MPD music_directory, fall back to the user's XDG
-    /// Downloads dir, last resort `~/Downloads`.
+    /// explicit `[youtube] download_dir`, then MPD `music_directory`,
+    /// then the user's XDG Downloads dir, last resort `~/Downloads`.
     download_dir: PathBuf,
 }
 
@@ -105,6 +105,7 @@ impl YouTubeSource {
         yt_dlp_bin: String,
         data_dir: PathBuf,
         mpd_music_dir: Option<PathBuf>,
+        download_dir_override: Option<PathBuf>,
     ) -> Self {
         let saved_path = data_dir.join(SAVED_FILENAME);
         let legacy = data_dir.join(LEGACY_SAVED_FILENAME);
@@ -114,11 +115,13 @@ impl YouTubeSource {
             }
         }
         let saved = load_saved(&saved_path);
-        let download_dir = mpd_music_dir.unwrap_or_else(|| {
-            dirs::download_dir()
-                .or_else(|| dirs::home_dir().map(|h| h.join("Downloads")))
-                .unwrap_or_else(|| PathBuf::from("."))
-        });
+        let download_dir = download_dir_override
+            .or(mpd_music_dir)
+            .unwrap_or_else(|| {
+                dirs::download_dir()
+                    .or_else(|| dirs::home_dir().map(|h| h.join("Downloads")))
+                    .unwrap_or_else(|| PathBuf::from("."))
+            });
         Self {
             mpd,
             http,

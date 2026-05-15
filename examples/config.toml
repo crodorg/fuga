@@ -76,6 +76,9 @@ redirect_port = 8888             # OAuth PKCE callback port
 [youtube]
 enabled = false
 yt_dlp_bin = "yt-dlp"
+# Where yt-dlp writes downloaded audio. Omit to fall back to
+# [mpd] music_directory, then XDG Downloads, then ~/Downloads.
+# download_dir = "/Users/you/Music/youtube"
 
 # Lifecycle hooks — shell commands invoked on key events. Each receives state
 # via FUGA_* environment variables:
