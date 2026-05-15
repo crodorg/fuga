@@ -55,6 +55,16 @@ open = "5.3"
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = { version = "0.10", features = ["tokio"] }
 
+# macOS-only deps to bridge the system media keys via MPRemoteCommandCenter.
+# Kept minimal: objc2 runtime + the three frameworks we touch + block2 for
+# the command handler block. No dock icon, no separate .app bundle.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+objc2-media-player = "0.3"
+block2 = "0.6"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

@@ -6,6 +6,8 @@ mod dispatch;
 mod hooks;
 mod ipc;
 mod keys;
+#[cfg(target_os = "macos")]
+mod macos;
 mod mpris;
 mod queue;
 mod source;
@@ -87,9 +89,59 @@ impl Cmd {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    async_main(None).await
+#[cfg(not(target_os = "macos"))]
+fn main() -> Result<()> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("tokio runtime")?;
+    rt.block_on(async_main(None))
+}
+
+/// macOS entry point. The real OS main thread is reserved for the Cocoa run
+/// loop (see `crate::macos`); the tokio runtime + the entire async app live
+/// on a dedicated worker thread. Pre-built MPRIS channels link them: the
+/// Cocoa side fills `event_tx` from MPRemoteCommandCenter callbacks, the
+/// tokio side consumes `event_rx` in the usual app loop.
+#[cfg(target_os = "macos")]
+fn main() -> Result<()> {
+    let (event_tx, event_rx) =
+        tokio::sync::mpsc::unbounded_channel::<mpris::MprisEvent>();
+    let (command_tx, _command_rx) =
+        tokio::sync::mpsc::unbounded_channel::<mpris::MprisCommand>();
+    let handles = mpris::MprisHandles {
+        event_rx,
+        command_tx,
+    };
+
+    std::thread::Builder::new()
+        .name("fuga-async".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("tokio runtime: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let code = match rt.block_on(async_main(Some(handles))) {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("err: {e}");
+                    1
+                }
+            };
+            // NSApp.run on the main thread won't return on its own; tear the
+            // whole process down so it exits with us.
+            std::process::exit(code);
+        })
+        .context("spawn async worker")?;
+
+    macos::run_main_loop(event_tx);
+    Ok(())
 }
 
 /// Body of `main`. Split out so that platforms which need to own the OS main
