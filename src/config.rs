@@ -91,6 +91,16 @@ pub struct UiConfig {
     /// the persisted state at `$XDG_DATA_HOME/fuga/state.json` once the
     /// user has toggled at least once.
     pub art_collapsed: bool,
+    /// Percentage of available vertical space (terminal height below the
+    /// 3-row tab bar) for the now-playing art panel. 100 = the panel's
+    /// top edge sits flush against the tab bar's bottom border. Clamped
+    /// at use to [20, 100].
+    pub art_height_pct: u16,
+    /// Percentage of available horizontal space (terminal width minus a
+    /// 24-cell margin reserved for the bottom-bar text on the left) for
+    /// the now-playing art panel. 100 = panel runs from that margin to
+    /// the right edge. Clamped at use to [15, 100].
+    pub art_width_pct: u16,
 }
 
 impl Default for UiConfig {
@@ -113,6 +123,10 @@ impl Default for UiConfig {
             multi_source_layout: "grouped".into(),
             radio_split: false,
             art_collapsed: false,
+            // Defaults that roughly preserve the prior look on a typical
+            // 130x50 terminal: ~33 rows tall, ~42 cells wide.
+            art_height_pct: 70,
+            art_width_pct: 40,
         }
     }
 }

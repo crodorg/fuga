@@ -341,6 +341,8 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
     });
 
     let thumb_cells = config.ui.thumb_cells;
+    let art_height_pct = config.ui.art_height_pct;
+    let art_width_pct = config.ui.art_width_pct;
     let keymap = crate::keys::Keymap::from_config(&config.keybindings);
     let base_theme = crate::theme::Theme::from_config(&config.theme);
     let hooks = config.hooks.clone();
@@ -375,6 +377,8 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
         art,
         term,
         thumb_cells,
+        art_height_pct,
+        art_width_pct,
         keymap,
         theme,
         base_theme,

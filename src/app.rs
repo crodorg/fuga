@@ -148,6 +148,14 @@ pub struct App {
     pub fetching: HashSet<String>,
     pub wake_tx: UnboundedSender<()>,
     pub thumb_cells: u16,
+    /// Vertical-axis size knob for the now-playing art panel, from
+    /// `[ui] art_height_pct`. 100 = full available height. Clamped to
+    /// [20, 100] at use.
+    pub art_height_pct: u16,
+    /// Horizontal-axis size knob for the now-playing art panel, from
+    /// `[ui] art_width_pct`. 100 = full available width. Clamped to
+    /// [15, 100] at use.
+    pub art_width_pct: u16,
     /// Modes the `T` key walks through. Built from `[ui] thumb_cycle` plus
     /// the startup mode if it wasn't in the list (so we always start on a
     /// member of the cycle).
@@ -335,6 +343,8 @@ impl App {
         art_cache: Arc<ArtCache>,
         term: Term,
         thumb_cells: u16,
+        art_height_pct: u16,
+        art_width_pct: u16,
         keymap: Keymap,
         theme: Theme,
         base_theme: Theme,
@@ -371,6 +381,8 @@ impl App {
             fetching: HashSet::new(),
             wake_tx,
             thumb_cells,
+            art_height_pct,
+            art_width_pct,
             thumb_cycle,
             now_playing_protocol: None,
             now_playing_uri: None,

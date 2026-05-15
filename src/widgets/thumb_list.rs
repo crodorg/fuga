@@ -11,6 +11,7 @@ use ratatui::Frame;
 use std::time::Duration;
 
 use crate::theme::Theme;
+use image::imageops::FilterType;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::{Resize, StatefulImage};
@@ -303,8 +304,10 @@ pub fn render_thumb_list(
             if let Some(p) = protocols.get_mut(uri) {
                 // Scale (not Fit): a source thumb smaller than the thumb
                 // cell rect would otherwise render at its native size,
-                // leaving whitespace right/below.
-                let img = StatefulImage::default().resize(Resize::Scale(None));
+                // leaving whitespace right/below. Lanczos3 keeps small
+                // thumbs from looking blocky when upscaled.
+                let img = StatefulImage::default()
+                    .resize(Resize::Scale(Some(FilterType::Lanczos3)));
                 f.render_stateful_widget(img, thumb_rect, p);
             } else {
                 let placeholder = Paragraph::new("..").style(ctx.theme.dim());

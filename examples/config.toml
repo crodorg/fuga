@@ -17,6 +17,15 @@ thumb_mode = "kitty"             # kitty | sixel | halfblocks | off  (sixel: now
 thumb_cycle = ["kitty", "off"]
 thumb_cells = 2                  # cells per inline thumbnail (2 = ~32px square)
 fps_cap = 30                     # render-rate ceiling
+# Now-playing album-art panel size. Each value is a percentage of the
+# available space along that axis. Vertical 100% = panel top edge flush
+# against the tab bar's bottom border. Horizontal 100% = panel runs from
+# the bottom-bar's 24-cell text margin to the right edge of the terminal.
+# Aspect of the cover is always preserved — whichever axis hits its
+# percentage first constrains the other.
+# Clamped to [20, 100] / [15, 100]. Sane on terminals from 80x24 upward.
+art_height_pct = 70
+art_width_pct  = 40
 
 # Tab list. Recognized ids: queue, albums, artists, playlists, stations,
 # radio, somafm, spotify, search. Omit to let fuga derive a sensible

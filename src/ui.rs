@@ -5,6 +5,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs};
 use ratatui::Frame;
+use image::imageops::FilterType;
 use ratatui_image::{Resize, StatefulImage};
 
 use crate::app::{App, LibraryView};
@@ -1162,17 +1163,22 @@ fn compute_art_dims(app: &App, area: Rect, bottom_h: u16) -> Option<(u16, u16)> 
         1.0
     };
 
-    // Width budget: half the screen, capped to leave room for the bottom
-    // bar's text columns (24-cell minimum on the left). +10% over the
-    // prior 20..40 window per user request.
-    let budget_w: u16 = (area.width / 2)
-        .min(area.width.saturating_sub(24))
-        .clamp(22, 44);
+    // Two-axis size knobs from `[ui]`. Each is a percentage of the
+    // available space along that axis. Vertical 100% = panel top edge
+    // flush against the tab bar's bottom border. Horizontal 100% =
+    // panel runs from the 24-cell left-text margin to the right edge.
+    // Defaults (70 / 40) preserve the prior look on a typical terminal.
+    let h_pct = app.art_height_pct.clamp(20, 100) as u32;
+    let w_pct = app.art_width_pct.clamp(15, 100) as u32;
 
-    // Height window. If the natural aspect drives the panel past `max_h`,
-    // we let height clamp first and back-derive width. Bumped 0.60 → 0.66
-    // for the same +10% scale.
-    let max_h = ((area.height as f32) * 0.66) as u16;
+    // The layout in `render` puts a 3-row tab bar above the body, so the
+    // panel can grow upward at most `area.height - 3` rows total
+    // (including its own top border and the bottom-bar protrusion).
+    let available_h = area.height.saturating_sub(3) as u32;
+    let available_w = area.width.saturating_sub(24) as u32;
+
+    let max_h = ((h_pct * available_h) / 100) as u16;
+    let budget_w: u16 = ((w_pct * available_w) / 100).max(22) as u16;
     let min_h: u16 = 10;
 
     // Round height to whole cells from the budget width, then back-derive
@@ -1193,18 +1199,29 @@ fn compute_art_dims(app: &App, area: Rect, bottom_h: u16) -> Option<(u16, u16)> 
         inner_h_cells = min_inner_h;
     }
 
-    // Back-derive width from rounded height — this is what eliminates the
-    // gap: now `inner_w_cells * cell_w_px / inner_h_cells / cell_h_px ==
-    // img_aspect` (rounded). `Resize::Fit` then fills the inner rect.
+    // Back-derive width from rounded height so the inner rect's pixel
+    // aspect matches the image; `Resize::Scale` then fills it without
+    // distortion.
     let actual_inner_h_px = inner_h_cells as f64 * cell_h_px;
     let actual_inner_w_px = actual_inner_h_px * img_aspect;
-    let inner_w_cells = (actual_inner_w_px / cell_w_px).round().max(1.0) as u16;
+    let mut inner_w_cells = (actual_inner_w_px / cell_w_px).round().max(1.0) as u16;
+
+    // If the two knobs disagree (e.g. tall + narrow), the back-derived
+    // width may exceed the width budget. Pin width to the budget and
+    // recompute height to preserve aspect — round-tripping with .round()
+    // here would let width creep back over budget.
+    if inner_w_cells.saturating_add(1) > budget_w {
+        inner_w_cells = budget_w.saturating_sub(1).max(1);
+        let new_inner_w_px = inner_w_cells as f64 * cell_w_px;
+        let new_inner_h_px = new_inner_w_px / img_aspect;
+        inner_h_cells = (new_inner_h_px / cell_h_px).round().max(1.0) as u16;
+    }
 
     let art_w = inner_w_cells
         .saturating_add(1)
         .min(budget_w)
         .min(area.width.saturating_sub(24))
-        .max(20);
+        .max(16);
     let art_h = inner_h_cells.saturating_add(1);
 
     if art_w < 16 || art_h < 8 {
@@ -1243,7 +1260,7 @@ fn render_art_panel(
     // stitching too.
     if app.art_collapsed {
         if let Some(proto) = app.now_playing_protocol.as_mut() {
-            let img = StatefulImage::default().resize(Resize::Scale(None));
+            let img = StatefulImage::default().resize(Resize::Scale(Some(FilterType::Lanczos3)));
             f.render_stateful_widget(img, art_rect, proto);
         }
         return;
@@ -1266,7 +1283,10 @@ fn render_art_panel(
         // was ~966px on Retina — leaving large whitespace right and below.
         // Scale fills the inner rect; compute_art_dims sets the inner
         // pixel aspect to match the image, so the fill is undistorted.
-        let img = StatefulImage::default().resize(Resize::Scale(None));
+        // Lanczos3 filter: Nearest is fast but visibly chunky when scaling
+        // a 640px cover up ~50%; Lanczos3 is the standard sharp-but-clean
+        // choice and the per-frame cost is negligible for one image.
+        let img = StatefulImage::default().resize(Resize::Scale(Some(FilterType::Lanczos3)));
         f.render_stateful_widget(img, inner, proto);
     }
 
