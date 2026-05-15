@@ -21,6 +21,7 @@ use std::thread;
 
 /// Inbound: D-Bus client requested an action. Translated to `Action` in app.
 #[derive(Debug, Clone)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub enum MprisEvent {
     PlayPause,
     Play,
@@ -34,6 +35,7 @@ pub enum MprisEvent {
 
 /// Outbound: app pushes new state to the MPRIS server.
 #[derive(Debug, Clone)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub enum MprisCommand {
     Metadata {
         title: String,
