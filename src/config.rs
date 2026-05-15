@@ -371,24 +371,43 @@ impl Config {
     }
 
     pub fn cache_dir(&self) -> PathBuf {
-        self.paths.cache_dir.clone().unwrap_or_else(|| {
-            dirs::cache_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("fuga")
-        })
+        self.paths
+            .cache_dir
+            .clone()
+            .unwrap_or_else(|| resolve_dir("XDG_CACHE_HOME", ".cache", dirs::cache_dir()))
     }
 
     pub fn data_dir(&self) -> PathBuf {
-        self.paths.data_dir.clone().unwrap_or_else(|| {
-            dirs::data_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("fuga")
-        })
+        self.paths
+            .data_dir
+            .clone()
+            .unwrap_or_else(|| resolve_dir("XDG_DATA_HOME", ".local/share", dirs::data_dir()))
     }
 }
 
 pub fn config_dir() -> PathBuf {
-    dirs::config_dir()
+    resolve_dir("XDG_CONFIG_HOME", ".config", dirs::config_dir())
+}
+
+/// Resolve a per-user directory under the conventional "fuga/" suffix.
+/// Order: $XDG_<KIND>_HOME → $HOME/<dotfile_subpath>/fuga (if it already
+/// exists) → platform default from the `dirs` crate. The dotfile check
+/// is existence-only so a fresh macOS install still creates state under
+/// ~/Library/... by default; users who opt into XDG layout get it picked
+/// up automatically.
+fn resolve_dir(env_var: &str, dotfile_subpath: &str, fallback: Option<PathBuf>) -> PathBuf {
+    if let Some(v) = std::env::var_os(env_var) {
+        if !v.is_empty() {
+            return PathBuf::from(v).join("fuga");
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        let dotfile = home.join(dotfile_subpath).join("fuga");
+        if dotfile.exists() {
+            return dotfile;
+        }
+    }
+    fallback
         .unwrap_or_else(|| PathBuf::from("."))
         .join("fuga")
 }

@@ -38,7 +38,7 @@ source switches so two backends never play at once.
 
 ## Requirements
 
-- Linux (developed on Void; other distros should work)
+- Linux or macOS (developed on Void Linux; also builds and runs on macOS)
 - Rust 1.75+ to build
 - `mpd` running on `localhost:6600` with your library indexed
 - A Kitty-graphics-capable terminal for inline thumbs:
@@ -70,6 +70,13 @@ $EDITOR ~/.config/fuga/config.toml
 ```
 
 Defaults work for local-only use as long as MPD is on `localhost:6600`.
+
+**Path resolution:** fuga checks `$XDG_CONFIG_HOME/fuga` first, then
+`~/.config/fuga` if it already exists, otherwise the platform default
+(`~/.config/fuga` on Linux, `~/Library/Application Support/fuga` on
+macOS). The same order applies to cache and data dirs with
+`$XDG_CACHE_HOME` and `$XDG_DATA_HOME`. macOS users who prefer the
+XDG layout just need to create `~/.config/fuga/` before first run.
 
 ### Tab bar
 

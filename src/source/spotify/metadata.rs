@@ -355,7 +355,7 @@ pub async fn find_user_playlist_id_by_name(
         "playlist `{name}` not in rootlist. Rootlist names: {found_names:?}"
     );
     Err(anyhow!(
-        "playlist `{name}` not in your library — open the Spotify app once to follow it (rootlist had {} playlists; see ~/.cache/fuga/fuga.log for names)",
+        "playlist `{name}` not in your library — open the Spotify app once to follow it (rootlist had {} playlists; see the fuga log for names)",
         found_names.len()
     ))
 }
