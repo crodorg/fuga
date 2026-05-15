@@ -18,10 +18,14 @@
 
 use crate::mpris::MprisEvent;
 use block2::RcBlock;
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+use objc2_foundation::{NSDictionary, NSString};
 use objc2_media_player::{
-    MPRemoteCommand, MPRemoteCommandCenter, MPRemoteCommandEvent, MPRemoteCommandHandlerStatus,
+    MPMediaItemPropertyTitle, MPNowPlayingInfoCenter, MPNowPlayingPlaybackState, MPRemoteCommand,
+    MPRemoteCommandCenter, MPRemoteCommandEvent, MPRemoteCommandHandlerStatus,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -29,10 +33,12 @@ pub fn run_main_loop(tx: UnboundedSender<MprisEvent>) {
     // SAFETY: callers in main.rs invoke this only from the OS main thread.
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
     let app = NSApplication::sharedApplication(mtm);
-    // Critical: keep us out of the dock and out of the foreground app list.
-    // Without this, NSApp claims the active-app slot when first touched and
-    // pulls keyboard focus out of the terminal that launched us.
-    app.setActivationPolicy(NSApplicationActivationPolicy::Prohibited);
+    // Accessory (not Prohibited): no dock icon and no foreground activation,
+    // but the process is still a real app to macOS — which is the level
+    // MPRemoteCommandCenter needs to route remote-command events to us.
+    // Prohibited is too restrictive: the system treats us as a daemon and
+    // skips event delivery.
+    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
     let center = unsafe { MPRemoteCommandCenter::sharedCommandCenter() };
     unsafe {
@@ -52,14 +58,34 @@ pub fn run_main_loop(tx: UnboundedSender<MprisEvent>) {
         install(&center.stopCommand(), tx, MprisEvent::Stop);
     }
 
+    // Announce ourselves as an active player. Without this macOS doesn't
+    // pick a "now playing" app and the remote commands above never fire,
+    // even with handlers attached. Real metadata will overwrite this once
+    // a track starts (TODO: plumb MprisCommand::Metadata back here); for
+    // now a placeholder title is enough for the system to route events.
+    unsafe { announce_player() };
+
     // Blocks until the process exits. The async worker calls
     // `std::process::exit` when `async_main` returns, tearing this down.
     app.run();
 }
 
+unsafe fn announce_player() {
+    let center = MPNowPlayingInfoCenter::defaultCenter();
+    let title_val: Retained<NSString> = NSString::from_str("fuga");
+    let title_obj: &AnyObject = &*(Retained::as_ptr(&title_val) as *const AnyObject);
+    let info: Retained<NSDictionary<NSString, AnyObject>> =
+        NSDictionary::from_slices(&[MPMediaItemPropertyTitle], &[title_obj]);
+    center.setNowPlayingInfo(Some(&info));
+    center.setPlaybackState(MPNowPlayingPlaybackState::Playing);
+}
+
 unsafe fn install(cmd: &MPRemoteCommand, tx: UnboundedSender<MprisEvent>, ev: MprisEvent) {
     cmd.setEnabled(true);
     let handler = RcBlock::new(move |_event: std::ptr::NonNull<MPRemoteCommandEvent>| {
+        // Debug-level so it's silent in default `info` logs but available
+        // when diagnosing missing media-key behavior with `--debug`.
+        tracing::debug!("macos mediakey: {:?}", ev);
         // Unbounded; only fails after the receiver is dropped, i.e. shutdown.
         let _ = tx.send(ev.clone());
         MPRemoteCommandHandlerStatus::Success
