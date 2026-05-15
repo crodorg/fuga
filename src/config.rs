@@ -348,7 +348,7 @@ fn default_global() -> &'static [(&'static str, &'static str)] {
         ("follow_playing", "f"),
         ("clear_queue", "C"),
         ("remove_from_queue", "D"),
-        ("expand_art", "V"),
+        ("expand_art", "v"),
         ("open_action_menu", "m"),
         ("toggle_pin", "P"),
         ("filter_in_page", "/"),

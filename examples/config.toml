@@ -109,54 +109,87 @@ yt_dlp_bin = "yt-dlp"
 # Up/Down/Left/Right, PageUp/PageDown, Home, End, Delete. Single-character keys
 # are written as themselves: "j", "+", "/". Capital letters imply shift.
 #
+# Every default is listed below as an explicit binding — change a value to
+# rebind, or comment out the line to fall back to the compile-time default.
+#
 # Available actions:
-#   quit, down, up, page_down, page_up, top, bottom,
-#   next_tab, prev_tab, tab_1..tab_9 (or tab:N for arbitrary),
-#   activate, enqueue, back, jump_roots,
-#   play_pause, next_track, prev_track, stop, refresh,
-#   toggle_thumb, vol_up, vol_down,
-#   toggle_shuffle, cycle_repeat, open_sort,
-#   focus_search, focus_command, toggle_help, toggle_like,
-#   open_devices,
-#   source_jump:<scheme>           # e.g. source_jump:spotify
+#   Navigation:   quit, down, up, page_down, page_up, top, bottom,
+#                 next_tab, next_tab_alt, prev_tab, prev_tab_alt,
+#                 tab_1..tab_9 (or tab:N for arbitrary)
+#   View/search:  activate, activate_alt, enqueue, back, back_alt,
+#                 focus_search, focus_command, filter_in_page, refresh,
+#                 open_sort, jump_roots
+#   Playback:     play_pause, next_track, prev_track, stop, seek_back,
+#                 seek_forward, vol_up, vol_down, toggle_shuffle,
+#                 cycle_repeat
+#   Library:      toggle_like, follow_playing, clear_queue,
+#                 remove_from_queue, expand_art, open_action_menu,
+#                 toggle_pin, download_hovered
+#   Sources/UI:   cycle_source, toggle_thumb, open_devices, toggle_help,
+#                 source_jump:<scheme>      # e.g. source_jump:spotify
 # -----------------------------------------------------------------------------
 
 [keybindings.global]
-quit         = "q"
-down         = "j"
-up           = "k"
-page_down    = "C-d"
-page_up      = "C-u"
-bottom       = "G"
-next_tab     = "Tab"
-prev_tab     = "BackTab"
-tab_1        = "1"
-tab_2        = "2"
-tab_3        = "3"
-tab_4        = "4"
-tab_5        = "5"
-tab_6        = "6"
-tab_7        = "7"
-tab_8        = "8"
-tab_9        = "9"
-focus_command = ":"
-activate     = "Enter"
-enqueue      = "a"
-back         = "Esc"
-back_alt     = "h"
-play_pause   = "Space"
-next_track   = "n"
-prev_track   = "p"
-refresh      = "r"
-toggle_thumb = "T"
-vol_up       = "+"
-vol_down     = "-"
-toggle_shuffle = "z"
-cycle_repeat   = "x"
-open_sort      = "o"
-toggle_help    = "?"
-toggle_like    = "F"
-open_devices   = "d"
+# Navigation
+quit              = "q"
+down              = "j"
+up                = "k"
+page_down         = "C-d"
+page_up           = "C-u"
+bottom            = "G"
+next_tab          = "Tab"
+prev_tab          = "BackTab"
+next_tab_alt      = "C-n"
+prev_tab_alt      = "C-p"
+tab_1             = "1"
+tab_2             = "2"
+tab_3             = "3"
+tab_4             = "4"
+tab_5             = "5"
+tab_6             = "6"
+tab_7             = "7"
+tab_8             = "8"
+tab_9             = "9"
+
+# View / search
+activate          = "Enter"
+activate_alt      = "l"
+enqueue           = "a"
+back              = "Esc"
+back_alt          = "h"
+focus_search      = "s"
+focus_command     = ":"
+filter_in_page    = "/"
+refresh           = "r"
+open_sort         = "o"
+
+# Playback
+play_pause        = "Space"
+next_track        = "n"
+prev_track        = "p"
+stop              = "S"
+seek_back         = "H"
+seek_forward      = "L"
+vol_up            = "+"
+vol_down          = "-"
+toggle_shuffle    = "z"
+cycle_repeat      = "x"
+
+# Library / queue
+toggle_like       = "F"
+follow_playing    = "f"
+clear_queue       = "C"
+remove_from_queue = "D"
+expand_art        = "v"
+open_action_menu  = "m"
+toggle_pin        = "P"
+download_hovered  = "Y"
+
+# Sources / UI
+cycle_source      = "t"
+toggle_thumb      = "T"
+open_devices      = "d"
+toggle_help       = "?"
 
 # Leader chords — pressing the leader key opens a which-key popup listing the
 # continuations. `g` is the default leader; add new leaders with their own
