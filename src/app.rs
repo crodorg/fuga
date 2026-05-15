@@ -98,6 +98,13 @@ pub struct CategoryState {
     /// Lets context-sensitive actions ("remove from playlist") know what
     /// container they're inside without re-walking the breadcrumb.
     pub descend_uris: Vec<String>,
+    /// Parallel to descents — entry `i` records the tab index the user
+    /// was on *before* pushing `stack[i+1]`. `Some(idx)` only when the
+    /// descent crossed tabs (e.g. Search → detail in Spotify); `None`
+    /// for ordinary in-tab descents. On `back()`, popping a `Some`
+    /// restores `active_tab_idx` so back from a cross-tab descent
+    /// returns to the originating tab.
+    pub origin_tabs: Vec<Option<usize>>,
 }
 
 impl CategoryState {
@@ -110,6 +117,7 @@ impl CategoryState {
             sort: None,
             parent_cursors: Vec::new(),
             descend_uris: Vec::new(),
+            origin_tabs: Vec::new(),
         }
     }
 }
@@ -541,6 +549,7 @@ impl App {
             s.stack.clear();
             s.parent_cursors.clear();
             s.descend_uris.clear();
+            s.origin_tabs.clear();
             s.cursor = 0;
             s.top = 0;
             s.loaded = false;
@@ -768,6 +777,7 @@ impl App {
                     s.stack.truncate(1);
                     s.parent_cursors.clear();
                     s.descend_uris.clear();
+                    s.origin_tabs.clear();
                     s.cursor = 0;
                     s.top = 0;
                     self.dirty = true;
@@ -1114,7 +1124,9 @@ impl App {
 
     fn back(&mut self) {
         let cat = self.active_category();
-        if let Some(s) = self.category_states.get_mut(&cat) {
+        // Restore origin-tab BEFORE the borrow of `self.category_states`
+        // ends, so we can use `self.active_tab_idx` after the if-let.
+        let restore_tab: Option<usize> = if let Some(s) = self.category_states.get_mut(&cat) {
             if s.stack.len() > 1 {
                 s.stack.pop();
                 // Restore the parent's cursor/top stashed at descend time;
@@ -1124,7 +1136,18 @@ impl App {
                 s.cursor = c;
                 s.top = t;
                 s.descend_uris.pop();
+                let origin = s.origin_tabs.pop().unwrap_or(None);
                 self.dirty = true;
+                origin
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(tab_idx) = restore_tab {
+            if tab_idx < self.tabs.len() {
+                self.active_tab_idx = tab_idx;
             }
         }
     }
@@ -1706,12 +1729,22 @@ impl App {
         } else {
             crate::types::Category::Albums
         };
-        if let Some(idx) = self.tabs.iter().position(|c| *c == target_cat) {
-            self.active_tab_idx = idx;
-        }
+        // Record the originating tab BEFORE switching, so back() can
+        // return the user to the Search tab they descended from.
+        let origin_tab_idx = self.active_tab_idx;
+        let switched_tabs =
+            if let Some(idx) = self.tabs.iter().position(|c| *c == target_cat) {
+                let crossed = idx != self.active_tab_idx;
+                self.active_tab_idx = idx;
+                crossed
+            } else {
+                false
+            };
         let s = self.category_states.entry(target_cat).or_default();
         s.parent_cursors.push((s.cursor, s.top));
         s.descend_uris.push(item.uri.clone());
+        s.origin_tabs
+            .push(if switched_tabs { Some(origin_tab_idx) } else { None });
         s.stack.push(LibraryView::Entries {
             scheme,
             label: item.display.title.clone(),
@@ -1883,6 +1916,7 @@ impl App {
                 if let Some(s) = self.category_states.get_mut(&cat) {
                     s.parent_cursors.push((s.cursor, s.top));
                     s.descend_uris.push(uri.clone());
+                    s.origin_tabs.push(None);
                     s.stack.push(view);
                     s.cursor = 0;
                     s.top = 0;
@@ -1899,6 +1933,7 @@ impl App {
                 let items = self.local.songs_in_album(&label).await?;
                 if let Some(s) = self.category_states.get_mut(&cat) {
                     s.parent_cursors.push((s.cursor, s.top));
+                    s.origin_tabs.push(None);
                     // Local album view: sort by track # when MPD plumbed it.
                     // Falls back to alpha for files without track tag.
                     let mut view = LibraryView::Tracks { label, items };
@@ -2154,6 +2189,7 @@ impl App {
             s.stack.clear();
             s.parent_cursors.clear();
             s.descend_uris.clear();
+            s.origin_tabs.clear();
             s.loaded = false;
             s.cursor = 0;
             s.top = 0;
@@ -2699,18 +2735,25 @@ impl App {
                 return;
             }
         };
-        if let Some(idx) = self
+        let origin_tab_idx = self.active_tab_idx;
+        let switched_tabs = if let Some(idx) = self
             .tabs
             .iter()
             .position(|c| *c == crate::types::Category::Spotify)
         {
+            let crossed = idx != self.active_tab_idx;
             self.active_tab_idx = idx;
-        }
+            crossed
+        } else {
+            false
+        };
         let s = self
             .category_states
             .entry(crate::types::Category::Spotify)
             .or_default();
         s.parent_cursors.push((s.cursor, s.top));
+        s.origin_tabs
+            .push(if switched_tabs { Some(origin_tab_idx) } else { None });
         s.stack.push(LibraryView::Entries {
             scheme: "spotify",
             label: format!("{kind}: {rel_uri}"),
