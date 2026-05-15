@@ -13,7 +13,7 @@ use std::time::Duration;
 use crate::theme::Theme;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
-use ratatui_image::StatefulImage;
+use ratatui_image::{Resize, StatefulImage};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::art_cache::ArtCache;
@@ -301,7 +301,11 @@ pub fn render_thumb_list(
                 );
             }
             if let Some(p) = protocols.get_mut(uri) {
-                f.render_stateful_widget(StatefulImage::default(), thumb_rect, p);
+                // Scale (not Fit): a source thumb smaller than the thumb
+                // cell rect would otherwise render at its native size,
+                // leaving whitespace right/below.
+                let img = StatefulImage::default().resize(Resize::Scale(None));
+                f.render_stateful_widget(img, thumb_rect, p);
             } else {
                 let placeholder = Paragraph::new("..").style(ctx.theme.dim());
                 f.render_widget(placeholder, thumb_rect);

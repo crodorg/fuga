@@ -1243,7 +1243,7 @@ fn render_art_panel(
     // stitching too.
     if app.art_collapsed {
         if let Some(proto) = app.now_playing_protocol.as_mut() {
-            let img = StatefulImage::default().resize(Resize::Fit(None));
+            let img = StatefulImage::default().resize(Resize::Scale(None));
             f.render_stateful_widget(img, art_rect, proto);
         }
         return;
@@ -1261,11 +1261,12 @@ fn render_art_panel(
     f.render_widget(block, art_rect);
 
     if let Some(proto) = app.now_playing_protocol.as_mut() {
-        // Fit scales the cover to the inner rect with letterbox so we never
-        // crop the album art. compute_art_dims sizes inner cells so its
-        // pixel area is square (matching the cell aspect from picker.font_size),
-        // which leaves zero or single-pixel letterbox for square covers.
-        let img = StatefulImage::default().resize(Resize::Fit(None));
+        // Scale (not Fit): Fit caps at the image's native size, so a 640px
+        // Spotify cover never grew beyond 640px even when the inner rect
+        // was ~966px on Retina — leaving large whitespace right and below.
+        // Scale fills the inner rect; compute_art_dims sets the inner
+        // pixel aspect to match the image, so the fill is undistorted.
+        let img = StatefulImage::default().resize(Resize::Scale(None));
         f.render_stateful_widget(img, inner, proto);
     }
 
