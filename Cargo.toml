@@ -55,6 +55,12 @@ open = "5.3"
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = { version = "0.10", features = ["tokio"] }
 
+# macOS media-key bridge (MPRemoteCommandCenter via MediaPlayer.framework).
+# Default features bring dbus/dbus-crossroads which we don't need on macOS;
+# disable them so the build stays Cocoa-only.
+[target.'cfg(target_os = "macos")'.dependencies]
+souvlaki = { version = "0.8", default-features = false }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
