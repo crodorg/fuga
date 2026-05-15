@@ -89,6 +89,14 @@ impl Cmd {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    async_main(None).await
+}
+
+/// Body of `main`. Split out so that platforms which need to own the OS main
+/// thread for something else (macOS Cocoa run loop) can spawn this on a
+/// worker thread and pass in pre-built MPRIS channels. `prebuilt_mpris=None`
+/// means "spawn the MPRIS server yourself if available on this platform".
+async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
     // rustls 0.23 requires an explicit CryptoProvider when more than one is
     // available in the dep graph. reqwest pulls aws-lc-rs; install it as the
     // process default before any TLS code runs.
@@ -339,12 +347,15 @@ async fn main() -> Result<()> {
         app.dirty = true;
     }
 
-    let mpris = match mpris::spawn() {
-        Ok(h) => Some(h),
-        Err(e) => {
-            tracing::warn!("mpris spawn failed: {e}; media keys disabled");
-            None
-        }
+    let mpris = match prebuilt_mpris {
+        Some(h) => Some(h),
+        None => match mpris::spawn() {
+            Ok(h) => Some(h),
+            Err(e) => {
+                tracing::warn!("mpris spawn failed: {e}; media keys disabled");
+                None
+            }
+        },
     };
 
     app::run(config, conn.events, app, wake_rx, spotify_event_rx, mpris).await
