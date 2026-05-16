@@ -1428,31 +1428,7 @@ impl App {
             return;
         };
         self.dirty = true;
-        let row_tx = self.row_batch_tx.clone();
-        let uri_owned = uri;
-        tokio::spawn(async move {
-            let (batch_tx, mut batch_rx) =
-                tokio::sync::mpsc::channel::<Result<Vec<Entry>>>(16);
-            let stream_fut = async move {
-                src.browse_streaming(&uri_owned, batch_tx).await;
-            };
-            let forward_fut = async {
-                while let Some(batch) = batch_rx.recv().await {
-                    if row_tx
-                        .send(RowBatch { view_id, batch, finished: false })
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-                let _ = row_tx.send(RowBatch {
-                    view_id,
-                    batch: Ok(Vec::new()),
-                    finished: true,
-                });
-            };
-            tokio::join!(stream_fut, forward_fut);
-        });
+        spawn_browse_stream(src, uri, view_id, self.row_batch_tx.clone());
     }
 
     /// Returns `(scheme, label, uri)` for a browse category's root view —
@@ -2032,31 +2008,12 @@ impl App {
                 };
                 self.dirty = true;
                 if let Some(view_id) = view_id {
-                    let row_tx = self.row_batch_tx.clone();
-                    let uri_owned = uri.clone();
-                    tokio::spawn(async move {
-                        let (batch_tx, mut batch_rx) =
-                            tokio::sync::mpsc::channel::<Result<Vec<Entry>>>(16);
-                        let stream_fut = async move {
-                            src.browse_streaming(&uri_owned, batch_tx).await;
-                        };
-                        let forward_fut = async {
-                            while let Some(batch) = batch_rx.recv().await {
-                                if row_tx
-                                    .send(RowBatch { view_id, batch, finished: false })
-                                    .is_err()
-                                {
-                                    return;
-                                }
-                            }
-                            let _ = row_tx.send(RowBatch {
-                                view_id,
-                                batch: Ok(Vec::new()),
-                                finished: true,
-                            });
-                        };
-                        tokio::join!(stream_fut, forward_fut);
-                    });
+                    spawn_browse_stream(
+                        src,
+                        uri.clone(),
+                        view_id,
+                        self.row_batch_tx.clone(),
+                    );
                 }
             }
             LibraryActivate::ExpandAlbum { label } => {
@@ -3736,6 +3693,49 @@ fn shuffle_in_place(v: &mut [QueuedItem]) {
         let j = (seed as usize) % (i + 1);
         v.swap(i, j);
     }
+}
+
+/// Spawn the streaming task for a `browse_streaming(uri)` call. Forwards
+/// every page-batch to `row_tx` and sends a final `finished` sentinel once
+/// the source's stream completes. Holds the sentinel for at least
+/// `MIN_VISIBLE_MS` so the header dots don't flash off invisibly on fast
+/// paths (Local browse, Spotify Library landing, cache hits).
+fn spawn_browse_stream(
+    src: std::sync::Arc<dyn crate::source::MusicSource>,
+    uri: String,
+    view_id: ViewId,
+    row_tx: tokio::sync::mpsc::UnboundedSender<RowBatch>,
+) {
+    const MIN_VISIBLE_MS: u64 = 600;
+    tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        let (batch_tx, mut batch_rx) =
+            tokio::sync::mpsc::channel::<Result<Vec<Entry>>>(16);
+        let stream_fut = async move {
+            src.browse_streaming(&uri, batch_tx).await;
+        };
+        let forward_fut = async {
+            while let Some(batch) = batch_rx.recv().await {
+                if row_tx
+                    .send(RowBatch { view_id, batch, finished: false })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            let elapsed = started.elapsed();
+            let min = std::time::Duration::from_millis(MIN_VISIBLE_MS);
+            if elapsed < min {
+                tokio::time::sleep(min - elapsed).await;
+            }
+            let _ = row_tx.send(RowBatch {
+                view_id,
+                batch: Ok(Vec::new()),
+                finished: true,
+            });
+        };
+        tokio::join!(stream_fut, forward_fut);
+    });
 }
 
 /// Float every entry whose URI is in `pinned` to the top of the view,

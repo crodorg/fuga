@@ -155,7 +155,11 @@ pub fn render_thumb_list(
         .borders(Borders::ALL)
         .border_style(ctx.theme.block_border());
     if let Some(right) = ctx.right_title.as_deref() {
-        block = block.title(Line::from(right.to_string()).right_aligned());
+        block = block.title(
+            Line::from(right.to_string())
+                .style(ctx.theme.accent())
+                .right_aligned(),
+        );
     }
     let inner = block.inner(ctx.area);
     f.render_widget(block, ctx.area);
