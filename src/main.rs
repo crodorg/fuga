@@ -357,7 +357,7 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
     let hooks = config.hooks.clone();
     crate::hooks::on_startup(&hooks);
     let tab_alignment = crate::config::TabAlignment::from_str(&config.ui.tab_alignment);
-    let modes = available_modes(&dispatcher);
+    let modes = available_modes(&dispatcher, &config.ui.tabs);
     // Startup source priority:
     //   1. First key of `[ui.tabs]` if registered — lets the user pick the
     //      landing source by ordering keys (`spotify = ...` before
@@ -448,15 +448,30 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
     app::run(config, conn.events, app, wake_rx, row_batch_rx, spotify_event_rx, mpris).await
 }
 
-/// Modes registered with the dispatcher, in canonical cycle order. `t` cycles
-/// through this list; an unconfigured source is skipped.
-pub fn available_modes(dispatcher: &Dispatcher) -> Vec<crate::types::SourceMode> {
+/// Modes registered with the dispatcher, ordered the way `t` should cycle.
+/// User-config `[ui.tabs]` key order wins — so writing `spotify=…` before
+/// `local=…` makes `t` go Spotify→Local. Modes registered but not present
+/// in `[ui.tabs]` follow in canonical cycle order. An unconfigured source
+/// is skipped entirely.
+pub fn available_modes(
+    dispatcher: &Dispatcher,
+    tab_overrides: &indexmap::IndexMap<String, Vec<String>>,
+) -> Vec<crate::types::SourceMode> {
     use crate::types::SourceMode;
-    SourceMode::cycle_order()
-        .iter()
-        .copied()
-        .filter(|m| dispatcher.get(m.scheme()).is_some())
-        .collect()
+    let mut out: Vec<SourceMode> = Vec::new();
+    for key in tab_overrides.keys() {
+        if let Some(mode) = SourceMode::from_scheme(key) {
+            if dispatcher.get(mode.scheme()).is_some() && !out.contains(&mode) {
+                out.push(mode);
+            }
+        }
+    }
+    for &m in SourceMode::cycle_order() {
+        if dispatcher.get(m.scheme()).is_some() && !out.contains(&m) {
+            out.push(m);
+        }
+    }
+    out
 }
 
 /// Tab list for a given source mode. Consults `[ui.tabs]` overrides
