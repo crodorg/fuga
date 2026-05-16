@@ -902,27 +902,20 @@ impl App {
                 }
             }
             Action::SourceJump(scheme) => {
-                // Source-jump only meaningful pre-merge. Best-effort: switch to
-                // the first configured browse tab whose backing source matches
-                // and reset its stack. If none match, status toast.
-                let target = self.tabs.iter().enumerate().find(|(_, c)| match (scheme.as_str(), c) {
-                    ("local", Category::Albums) => self.dispatcher.get("local").is_some(),
-                    ("spotify", Category::Spotify) => self.dispatcher.get("spotify").is_some(),
-                    ("spotify", Category::Albums)
-                    | ("spotify", Category::Artists)
-                    | ("spotify", Category::Playlists) => self.dispatcher.get("spotify").is_some(),
-                    ("radio", Category::Stations) | ("somafm", Category::Stations) => true,
-                    ("radio", Category::Radio) => true,
-                    ("somafm", Category::SomaFm) => true,
-                    _ => false,
-                });
-                if let Some((idx, _)) = target {
-                    self.active_tab_idx = idx;
-                    self.ensure_active_loaded().await;
-                    self.dirty = true;
-                } else {
+                // Switch source mode (same code path as `t`-cycle). The
+                // previous implementation only re-pointed `active_tab_idx`
+                // within the current tab list, which silently no-op'd in
+                // any mode where the target source wasn't represented as a
+                // tab — defeating the purpose of `gl`/`gs`/`gr`/`gf`/`gy`.
+                let Some(mode) = SourceMode::from_scheme(&scheme) else {
+                    self.set_status(format!("unknown source: {scheme}"));
+                    return Ok(());
+                };
+                if self.dispatcher.get(mode.scheme()).is_none() {
                     self.set_status(format!("source not registered: {scheme}"));
+                    return Ok(());
                 }
+                self.set_mode(mode).await;
             }
             Action::VolumeUp => {
                 if self.volume_debounce_fired() {
