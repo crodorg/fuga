@@ -644,10 +644,36 @@ impl App {
             } else {
                 None
             };
-            if let Some(axis) = auto_axis {
+            // Root view (depth 1): respect user's modal-set sort if any,
+            // else auto-detect, else the category default (so Local Albums
+            // still lands alpha-sorted even without sort_hint metadata).
+            // Sub-views (depth > 1): auto-detect wins — album-track listings
+            // need TrackNumber regardless of what sort the parent root used.
+            let is_root = view_id.depth == 1;
+            let final_axis = if is_root {
+                state.sort.or(auto_axis).or_else(|| default_sort_for(view_id.category))
+            } else {
+                auto_axis
+            };
+            if let Some(axis) = final_axis {
                 if let Some(view) = state.stack.last_mut() {
                     sort_library_view(view, axis);
-                    state.sort = Some(axis);
+                    // Root: only set state.sort if user hasn't picked one yet.
+                    // Sub-view: overwrite so the sort modal opens pre-selected
+                    // to the auto-detected axis the user just landed in.
+                    if !is_root || state.sort.is_none() {
+                        state.sort = Some(axis);
+                    }
+                }
+            }
+            // Pinning only applies at the root view (pins are URIs that show
+            // up in tab landings, not in descended sub-views).
+            if is_root {
+                let pinned = self.pinned.clone();
+                if let Some(state) = self.category_states.get_mut(&view_id.category) {
+                    if let Some(view) = state.stack.last_mut() {
+                        apply_pinning(view, &pinned);
+                    }
                 }
             }
             self.dirty = true;
@@ -1267,6 +1293,16 @@ impl App {
 
     fn back(&mut self) {
         let cat = self.active_category();
+        // Esc on a committed-filter view should clear the filter first,
+        // not pop the stack — otherwise a user who hits Enter to commit a
+        // filter has no obvious way out (the input box is gone, so the
+        // filter-input Esc handler doesn't fire). A second Esc with no
+        // filter set then falls through to the normal back-pop.
+        if self.filter_input.is_none() && self.filter_active.remove(&cat).is_some() {
+            self.clamp_cursor_to_filter();
+            self.dirty = true;
+            return;
+        }
         // Restore origin-tab BEFORE the borrow of `self.category_states`
         // ends, so we can use `self.active_tab_idx` after the if-let.
         let restore_tab: Option<usize> = if let Some(s) = self.category_states.get_mut(&cat) {
@@ -1299,9 +1335,12 @@ impl App {
         }
     }
 
-    /// Lazy-load the active browse category's root view if it hasn't been
-    /// fetched yet. Single-source for Slice 1: takes the first source whose
-    /// scheme can populate this category. Stations is the merge exception.
+    /// Lazy-load the active browse category's root view via the streaming
+    /// pipeline. Pushes an empty Entries view immediately (so the header dots
+    /// and breadcrumb show right away) and spawns a `browse_streaming` task;
+    /// pages stream in through `handle_row_batch`, which runs sort + pinning
+    /// once the stream finishes. No-op when already loaded or on non-browse
+    /// tabs.
     pub async fn ensure_active_loaded(&mut self) {
         let cat = self.active_category();
         if !cat.is_browse() {
@@ -1315,234 +1354,158 @@ impl App {
         if already {
             return;
         }
-        let mut view = match self.fetch_category_root(cat).await {
-            Ok(v) => v,
+        let (scheme, label, uri) = match self.category_root_request(cat) {
+            Ok(t) => t,
             Err(e) => {
                 self.set_status(format!("load {}: {e}", cat.label()));
-                LibraryView::Entries {
-                    scheme: "local",
-                    label: cat.label().to_string(),
-                    entries: Vec::new(),
+                if let Some(s) = self.category_states.get_mut(&cat) {
+                    s.stack = vec![LibraryView::Entries {
+                        scheme: "local",
+                        label: cat.label().to_string(),
+                        entries: Vec::new(),
+                    }];
+                    s.cursor = 0;
+                    s.top = 0;
+                    s.loaded = true;
+                    s.streaming = false;
                 }
+                self.dirty = true;
+                return;
             }
         };
-        // Apply default sort per category if the user hasn't already
-        // picked one. Spotify saved-* endpoints already return newest-first;
-        // explicit re-sort here guarantees the order survives view
-        // construction and handles the local fallback paths too.
-        //
-        // Spotify Saved Albums carry release-date as `sort_hint`; user wants
-        // newest-released first there. Local Albums have no sort_hint, so
-        // keep AlphaAsc for that mode.
+        let src = match self.dispatcher.get(scheme).cloned() {
+            Some(s) => s,
+            None => {
+                self.set_status(format!("source missing: {scheme}"));
+                if let Some(s) = self.category_states.get_mut(&cat) {
+                    s.stack = vec![LibraryView::Entries {
+                        scheme,
+                        label: cat.label().to_string(),
+                        entries: Vec::new(),
+                    }];
+                    s.cursor = 0;
+                    s.top = 0;
+                    s.loaded = true;
+                    s.streaming = false;
+                }
+                self.dirty = true;
+                return;
+            }
+        };
+        // Stash the default axis on state.sort so the sort modal opens
+        // pre-selected even before the stream finishes. handle_row_batch
+        // re-applies it after the rows arrive (sort needs the data).
         let default_axis = match (cat, self.active_source) {
             (Category::Albums, SourceMode::Spotify) => Some(SortAxis::RecentlyAdded),
             _ => default_sort_for(cat),
         };
-        if let Some(s) = self.category_states.get(&cat) {
-            if s.sort.is_none() {
-                if let Some(axis) = default_axis {
-                    sort_library_view(&mut view, axis);
-                }
-            } else if let Some(axis) = s.sort {
-                sort_library_view(&mut view, axis);
-            }
-        }
-        apply_pinning(&mut view, &self.pinned);
-        if let Some(s) = self.category_states.get_mut(&cat) {
-            // Stash the default axis on the state so the sort modal opens
-            // pre-selected to the right entry.
+        let view_id = if let Some(s) = self.category_states.get_mut(&cat) {
             if s.sort.is_none() {
                 s.sort = default_axis;
             }
-            s.stack = vec![view];
+            s.stack = vec![LibraryView::Entries {
+                scheme,
+                label,
+                entries: Vec::new(),
+            }];
             s.cursor = 0;
             s.top = 0;
             s.loaded = true;
-        }
+            // descend_uris stays empty at root (only filled on DescendEntry);
+            // `current_descend_uri` and the playlist-membership check both
+            // depend on that invariant.
+            s.descend_uris.clear();
+            s.parent_cursors.clear();
+            s.origin_tabs.clear();
+            s.descend_epoch = s.descend_epoch.wrapping_add(1);
+            s.streaming = true;
+            ViewId {
+                category: cat,
+                depth: 1,
+                epoch: s.descend_epoch,
+            }
+        } else {
+            return;
+        };
         self.dirty = true;
+        let row_tx = self.row_batch_tx.clone();
+        let uri_owned = uri;
+        tokio::spawn(async move {
+            let (batch_tx, mut batch_rx) =
+                tokio::sync::mpsc::channel::<Result<Vec<Entry>>>(16);
+            let stream_fut = async move {
+                src.browse_streaming(&uri_owned, batch_tx).await;
+            };
+            let forward_fut = async {
+                while let Some(batch) = batch_rx.recv().await {
+                    if row_tx
+                        .send(RowBatch { view_id, batch, finished: false })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                let _ = row_tx.send(RowBatch {
+                    view_id,
+                    batch: Ok(Vec::new()),
+                    finished: true,
+                });
+            };
+            tokio::join!(stream_fut, forward_fut);
+        });
     }
 
-    /// Build the initial view for a browse category. Mode-driven: content
-    /// pulls from `self.active_source` only. The legacy multi-source `Sections`
-    /// merge is gone — toggle `t` to switch sources.
-    async fn fetch_category_root(&self, cat: Category) -> Result<LibraryView> {
+    /// Returns `(scheme, label, uri)` for a browse category's root view —
+    /// the shape `browse_streaming(uri)` needs. Mode-driven; mirrors the
+    /// dispatch table the old `fetch_category_root` walked synchronously.
+    fn category_root_request(
+        &self,
+        cat: Category,
+    ) -> Result<(&'static str, String, String)> {
         match cat {
-            Category::Directories => {
-                // Local mode landing. Real MPD `lsinfo` walk: top-level dirs
-                // + files at the music_directory root. Descend by activating
-                // a directory entry (URIs of the form `local:dir:<path>`).
-                let src = self
-                    .dispatcher
-                    .get("local")
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("Local not enabled"))?;
-                let entries = src.browse("local:dir:").await?;
-                Ok(LibraryView::Entries {
-                    scheme: "local",
-                    label: "Directories".into(),
-                    entries,
-                })
-            }
+            Category::Directories => Ok(("local", "Directories".into(), "local:dir:".into())),
             Category::Albums => match self.active_source {
-                SourceMode::Local => {
-                    let src = self
-                        .dispatcher
-                        .get("local")
-                        .cloned()
-                        .ok_or_else(|| anyhow::anyhow!("Local not enabled"))?;
-                    let entries = src.browse("").await?;
-                    Ok(LibraryView::Entries {
-                        scheme: "local",
-                        label: "Albums".into(),
-                        entries,
-                    })
-                }
-                SourceMode::Spotify => {
-                    let src = self
-                        .dispatcher
-                        .get("spotify")
-                        .cloned()
-                        .ok_or_else(|| anyhow::anyhow!("Spotify not enabled"))?;
-                    let entries = src.browse("spotify:view:saved_albums").await?;
-                    Ok(LibraryView::Entries {
-                        scheme: "spotify",
-                        label: "Saved Albums".into(),
-                        entries,
-                    })
-                }
+                SourceMode::Local => Ok(("local", "Albums".into(), String::new())),
+                SourceMode::Spotify => Ok((
+                    "spotify",
+                    "Saved Albums".into(),
+                    "spotify:view:saved_albums".into(),
+                )),
                 _ => Err(anyhow::anyhow!("Albums: not available in this mode")),
             },
-            Category::Artists => {
-                let src = self
-                    .dispatcher
-                    .get("spotify")
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("Spotify not enabled"))?;
-                let entries = src.browse("spotify:view:followed_artists").await?;
-                Ok(LibraryView::Entries {
-                    scheme: "spotify",
-                    label: "Followed Artists".into(),
-                    entries,
-                })
-            }
+            Category::Artists => Ok((
+                "spotify",
+                "Followed Artists".into(),
+                "spotify:view:followed_artists".into(),
+            )),
             Category::Playlists => match self.active_source {
                 SourceMode::Local => {
-                    let src = self
-                        .dispatcher
-                        .get("local")
-                        .cloned()
-                        .ok_or_else(|| anyhow::anyhow!("Local not enabled"))?;
-                    let entries = src.browse("local:playlists").await?;
-                    Ok(LibraryView::Entries {
-                        scheme: "local",
-                        label: "Playlists".into(),
-                        entries,
-                    })
+                    Ok(("local", "Playlists".into(), "local:playlists".into()))
                 }
-                SourceMode::Spotify => {
-                    let src = self
-                        .dispatcher
-                        .get("spotify")
-                        .cloned()
-                        .ok_or_else(|| anyhow::anyhow!("Spotify not enabled"))?;
-                    let entries = src.browse("spotify:view:playlists").await?;
-                    Ok(LibraryView::Entries {
-                        scheme: "spotify",
-                        label: "Playlists".into(),
-                        entries,
-                    })
-                }
+                SourceMode::Spotify => Ok((
+                    "spotify",
+                    "Playlists".into(),
+                    "spotify:view:playlists".into(),
+                )),
                 _ => Err(anyhow::anyhow!("Playlists: not available in this mode")),
             },
-            Category::Radio => {
-                let src = self
-                    .dispatcher
-                    .get("radio")
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("Radio not enabled"))?;
-                let entries = src.browse("").await?;
-                Ok(LibraryView::Entries {
-                    scheme: "radio",
-                    label: "Radio".into(),
-                    entries,
-                })
-            }
-            Category::SomaFm => {
-                let src = self
-                    .dispatcher
-                    .get("somafm")
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("SomaFM not enabled"))?;
-                let entries = src.browse("").await?;
-                Ok(LibraryView::Entries {
-                    scheme: "somafm",
-                    label: "SomaFM".into(),
-                    entries,
-                })
-            }
-            Category::Spotify => {
-                let src = self
-                    .dispatcher
-                    .get("spotify")
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("Spotify not enabled"))?;
-                let entries = src.browse("").await?;
-                Ok(LibraryView::Entries {
-                    scheme: "spotify",
-                    label: "Library".into(),
-                    entries,
-                })
-            }
-            Category::Podcasts => {
-                let src = self
-                    .dispatcher
-                    .get("spotify")
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("Spotify not enabled"))?;
-                let entries = src.browse("spotify:view:saved_shows").await?;
-                Ok(LibraryView::Entries {
-                    scheme: "spotify",
-                    label: "Podcasts".into(),
-                    entries,
-                })
-            }
-            Category::YouTube => {
-                let src = self
-                    .dispatcher
-                    .get("youtube")
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("YouTube not enabled"))?;
-                let entries = src.browse("youtube:saved").await?;
-                Ok(LibraryView::Entries {
-                    scheme: "youtube",
-                    label: "Saved".into(),
-                    entries,
-                })
-            }
-            Category::Stations => {
-                // Mode-driven: SomaFm mode → somafm channels, Radio mode →
-                // user radio list. Other modes shouldn't render this tab.
-                let (scheme, label): (&'static str, &str) = match self.active_source {
-                    SourceMode::SomaFm => ("somafm", "SomaFM"),
-                    SourceMode::Radio => ("radio", "Radio"),
-                    _ => return Err(anyhow::anyhow!("Stations: not available in this mode")),
-                };
-                let src = self
-                    .dispatcher
-                    .get(scheme)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{label} not enabled"))?;
-                let entries = src.browse("").await?;
-                Ok(LibraryView::Entries {
-                    scheme,
-                    label: label.to_string(),
-                    entries,
-                })
-            }
+            Category::Radio => Ok(("radio", "Radio".into(), String::new())),
+            Category::SomaFm => Ok(("somafm", "SomaFM".into(), String::new())),
+            Category::Spotify => Ok(("spotify", "Library".into(), String::new())),
+            Category::Podcasts => Ok((
+                "spotify",
+                "Podcasts".into(),
+                "spotify:view:saved_shows".into(),
+            )),
+            Category::YouTube => Ok(("youtube", "Saved".into(), "youtube:saved".into())),
+            Category::Stations => match self.active_source {
+                SourceMode::SomaFm => Ok(("somafm", "SomaFM".into(), String::new())),
+                SourceMode::Radio => Ok(("radio", "Radio".into(), String::new())),
+                _ => Err(anyhow::anyhow!("Stations: not available in this mode")),
+            },
             _ => Err(anyhow::anyhow!("non-browse category: {}", cat.label())),
         }
     }
-
 
     async fn cycle_thumb_mode(&mut self) {
         // Walk the configured cycle list. If current mode isn't in the
@@ -1887,6 +1850,10 @@ impl App {
             } else {
                 false
             };
+        // Search → descend implies the user picked from the search list;
+        // drop any in-page filter so the child view starts clean.
+        self.filter_active.remove(&target_cat);
+        self.filter_input = None;
         let s = self.category_states.entry(target_cat).or_default();
         s.parent_cursors.push((s.cursor, s.top));
         s.descend_uris.push(item.uri.clone());
@@ -2032,6 +1999,11 @@ impl App {
                     .get(scheme)
                     .ok_or_else(|| anyhow::anyhow!("source missing: {scheme}"))?
                     .clone();
+                // Descending into a row means the user picked an item from
+                // the filtered list — the filter pattern doesn't apply to
+                // the child view, so drop it.
+                self.filter_active.remove(&cat);
+                self.filter_input = None;
                 // Push an empty Entries view synchronously so the user gets
                 // immediate feedback (breadcrumb advances, "loading…" state
                 // is visible). The streaming task then appends rows as each
@@ -2089,6 +2061,8 @@ impl App {
             }
             LibraryActivate::ExpandAlbum { label } => {
                 let items = self.local.songs_in_album(&label).await?;
+                self.filter_active.remove(&cat);
+                self.filter_input = None;
                 if let Some(s) = self.category_states.get_mut(&cat) {
                     s.parent_cursors.push((s.cursor, s.top));
                     s.origin_tabs.push(None);
