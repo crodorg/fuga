@@ -1267,6 +1267,16 @@ impl App {
 
     fn back(&mut self) {
         let cat = self.active_category();
+        // Esc on a committed-filter view should clear the filter first,
+        // not pop the stack — otherwise a user who hits Enter to commit a
+        // filter has no obvious way out (the input box is gone, so the
+        // filter-input Esc handler doesn't fire). A second Esc with no
+        // filter set then falls through to the normal back-pop.
+        if self.filter_input.is_none() && self.filter_active.remove(&cat).is_some() {
+            self.clamp_cursor_to_filter();
+            self.dirty = true;
+            return;
+        }
         // Restore origin-tab BEFORE the borrow of `self.category_states`
         // ends, so we can use `self.active_tab_idx` after the if-let.
         let restore_tab: Option<usize> = if let Some(s) = self.category_states.get_mut(&cat) {
@@ -1887,6 +1897,10 @@ impl App {
             } else {
                 false
             };
+        // Search → descend implies the user picked from the search list;
+        // drop any in-page filter so the child view starts clean.
+        self.filter_active.remove(&target_cat);
+        self.filter_input = None;
         let s = self.category_states.entry(target_cat).or_default();
         s.parent_cursors.push((s.cursor, s.top));
         s.descend_uris.push(item.uri.clone());
@@ -2032,6 +2046,11 @@ impl App {
                     .get(scheme)
                     .ok_or_else(|| anyhow::anyhow!("source missing: {scheme}"))?
                     .clone();
+                // Descending into a row means the user picked an item from
+                // the filtered list — the filter pattern doesn't apply to
+                // the child view, so drop it.
+                self.filter_active.remove(&cat);
+                self.filter_input = None;
                 // Push an empty Entries view synchronously so the user gets
                 // immediate feedback (breadcrumb advances, "loading…" state
                 // is visible). The streaming task then appends rows as each
@@ -2089,6 +2108,8 @@ impl App {
             }
             LibraryActivate::ExpandAlbum { label } => {
                 let items = self.local.songs_in_album(&label).await?;
+                self.filter_active.remove(&cat);
+                self.filter_input = None;
                 if let Some(s) = self.category_states.get_mut(&cat) {
                     s.parent_cursors.push((s.cursor, s.top));
                     s.origin_tabs.push(None);
