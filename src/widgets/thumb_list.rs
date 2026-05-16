@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::text::Line;
 use ratatui::widgets::{
     Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
@@ -132,6 +133,10 @@ pub struct ThumbListCtx<'a> {
     /// non-data rows (e.g. search-result group headers) and the count
     /// should reflect only the data rows.
     pub count_override: Option<usize>,
+    /// Optional right-aligned title appearing on the same top border as
+    /// the main title. Used to surface the streaming dots indicator on
+    /// the right edge while the view is loading.
+    pub right_title: Option<String>,
 }
 
 pub fn render_thumb_list(
@@ -145,10 +150,13 @@ pub fn render_thumb_list(
     wake: &UnboundedSender<()>,
 ) {
     let title_count = ctx.count_override.unwrap_or(ctx.rows.len());
-    let block = Block::default()
+    let mut block = Block::default()
         .title(format!("{} ({})", ctx.title, title_count))
         .borders(Borders::ALL)
         .border_style(ctx.theme.block_border());
+    if let Some(right) = ctx.right_title.as_deref() {
+        block = block.title(Line::from(right.to_string()).right_aligned());
+    }
     let inner = block.inner(ctx.area);
     f.render_widget(block, ctx.area);
 

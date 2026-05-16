@@ -80,7 +80,11 @@ pub struct UiConfig {
     /// youtube, search. Sources missing from the map (or with empty/all-
     /// invalid lists) fall back to hard-coded defaults so the user always
     /// retains a way to navigate.
-    pub tabs: HashMap<String, Vec<String>>,
+    ///
+    /// IndexMap preserves TOML key order so the FIRST source defined here
+    /// becomes the startup source mode — putting `spotify = [...]` before
+    /// `local = [...]` makes fuga launch in Spotify mode.
+    pub tabs: indexmap::IndexMap<String, Vec<String>>,
     /// Tab bar horizontal alignment: "center" | "left" | "right".
     pub tab_alignment: String,
     /// How merged source lists render: "grouped" | "interleaved_dedupe" |
@@ -121,7 +125,7 @@ impl Default for UiConfig {
                 "duration".into(),
             ],
             library_columns: vec!["artist".into(), "album".into(), "title".into()],
-            tabs: HashMap::new(),
+            tabs: indexmap::IndexMap::new(),
             tab_alignment: "center".into(),
             multi_source_layout: "grouped".into(),
             radio_split: false,

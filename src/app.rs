@@ -110,6 +110,12 @@ pub struct CategoryState {
     /// back-then-redescend-same-URI sequence can't route the old
     /// stream's late batches into the new view.
     pub descend_epoch: u64,
+    /// True while a streaming browse task is feeding rows into the
+    /// current top-of-stack view. Drives the animated `...` indicator
+    /// in the view header. Set on descent push; cleared by
+    /// `handle_row_batch` when a batch carries `finished == true` or
+    /// reports an error.
+    pub streaming: bool,
 }
 
 impl CategoryState {
@@ -124,6 +130,7 @@ impl CategoryState {
             descend_uris: Vec::new(),
             origin_tabs: Vec::new(),
             descend_epoch: 0,
+            streaming: false,
         }
     }
 }
@@ -164,7 +171,7 @@ pub struct App {
     /// Per-source-scheme tab override map from `[ui.tabs]`. Consulted on
     /// every `set_mode()` so the bar swaps to the user's mode-specific
     /// list when they hit `t`.
-    pub tab_overrides: HashMap<String, Vec<String>>,
+    pub tab_overrides: indexmap::IndexMap<String, Vec<String>>,
     pub active_tab_idx: usize,
     pub tab_alignment: TabAlignment,
     /// Per-browse-category state. Queue / Search keep their own fields.
@@ -224,7 +231,7 @@ pub struct App {
     pub last_volume_at: Option<Instant>,
     pub shuffle: bool,
     pub repeat: RepeatMode,
-    tick_counter: u32,
+    pub tick_counter: u32,
 
     pub keymap: Keymap,
     pub leader: Option<LeaderMap>,
@@ -313,6 +320,14 @@ pub struct App {
     /// or press any non-allowed key to close. Set by mouse clicks on
     /// inline thumbnails; cleared on overlay-close.
     pub expanded_art_uri: Option<String>,
+    /// Dedicated protocol for the expanded-art overlay. Separate from the
+    /// shared `protocols` map (which is keyed by uri and used by inline
+    /// thumbs) so the overlay's large-rect resize state can't fight with
+    /// the same image's small-rect thumb in the body — that double-render
+    /// caused the "top-left chunk of zoom appears in the icon" flicker on
+    /// `v` toggle. Tuple = (uri, protocol); replaced when the user
+    /// expands a different uri, dropped on overlay close.
+    pub expanded_art_protocol: Option<(String, StatefulProtocol)>,
     /// Last-rendered hit-rects for inline thumbnails (image cell only,
     /// not the row text). Populated by `widgets::thumb_list`; consumed
     /// by `handle_mouse` to detect clicks on the thumb image.
@@ -334,6 +349,15 @@ pub struct App {
     /// volume / state cells). Click handler maps mouse buttons to
     /// transport: left = previous, middle = play/pause, right = next.
     pub now_playing_text_rect: Option<Rect>,
+    /// Last-rendered rect of the `<<` previous-track glyph on row 0 of
+    /// the bottom bar. Left-click → Action::PrevTrack.
+    pub prev_rect: Option<Rect>,
+    /// Last-rendered rect of the `[playing]/[paused]/[stopped]` state
+    /// label on row 0. Left-click → Action::PlayPause.
+    pub playpause_rect: Option<Rect>,
+    /// Last-rendered rect of the `>>` next-track glyph on row 0.
+    /// Left-click → Action::NextTrack.
+    pub next_rect: Option<Rect>,
     /// Shared 0..=100 download-progress slot. `255` = no active download.
     /// Updated by the YouTube source's spawned download task; read by
     /// the status-toast renderer.
@@ -398,7 +422,7 @@ impl App {
         base_theme: Theme,
         hooks: Hooks,
         tabs: Vec<Category>,
-        tab_overrides: HashMap<String, Vec<String>>,
+        tab_overrides: indexmap::IndexMap<String, Vec<String>>,
         tab_alignment: TabAlignment,
         active_source: SourceMode,
         available_modes: Vec<SourceMode>,
@@ -482,6 +506,7 @@ impl App {
             art_collapsed: false,
             state_path: None,
             expanded_art_uri: None,
+            expanded_art_protocol: None,
             thumb_hits: Vec::new(),
             pinned: std::collections::HashSet::new(),
             action_menu_open: false,
@@ -489,6 +514,9 @@ impl App {
             playlist_picker: None,
             volume_rect: None,
             now_playing_text_rect: None,
+            prev_rect: None,
+            playpause_rect: None,
+            next_rect: None,
             download_progress: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(255)),
             toast_inbox: std::sync::Arc::new(std::sync::Mutex::new(None)),
             shutdown: CancellationToken::new(),
@@ -591,11 +619,14 @@ impl App {
             }
             Ok(_) => {} // empty batch — finished sentinel or no-op page
             Err(e) => {
-                self.set_status(format!("load failed: {e}"));
+                state.streaming = false;
+                let msg = format!("load failed: {e}");
+                self.set_status(msg);
                 return;
             }
         }
         if finished {
+            state.streaming = false;
             // Auto-sort once the full stream is in. Mirrors the non-streaming
             // path's heuristic: track_no → TrackNumber; sort_hint OR spotify
             // playlist URI → RecentlyAdded. The spotify-playlist override
@@ -671,6 +702,7 @@ impl App {
             s.cursor = 0;
             s.top = 0;
             s.loaded = false;
+            s.streaming = false;
             // sort: keep prior preference so re-fetch lands on the same axis.
         }
         let from = self.last_active_scheme;
@@ -902,27 +934,20 @@ impl App {
                 }
             }
             Action::SourceJump(scheme) => {
-                // Source-jump only meaningful pre-merge. Best-effort: switch to
-                // the first configured browse tab whose backing source matches
-                // and reset its stack. If none match, status toast.
-                let target = self.tabs.iter().enumerate().find(|(_, c)| match (scheme.as_str(), c) {
-                    ("local", Category::Albums) => self.dispatcher.get("local").is_some(),
-                    ("spotify", Category::Spotify) => self.dispatcher.get("spotify").is_some(),
-                    ("spotify", Category::Albums)
-                    | ("spotify", Category::Artists)
-                    | ("spotify", Category::Playlists) => self.dispatcher.get("spotify").is_some(),
-                    ("radio", Category::Stations) | ("somafm", Category::Stations) => true,
-                    ("radio", Category::Radio) => true,
-                    ("somafm", Category::SomaFm) => true,
-                    _ => false,
-                });
-                if let Some((idx, _)) = target {
-                    self.active_tab_idx = idx;
-                    self.ensure_active_loaded().await;
-                    self.dirty = true;
-                } else {
+                // Switch source mode (same code path as `t`-cycle). The
+                // previous implementation only re-pointed `active_tab_idx`
+                // within the current tab list, which silently no-op'd in
+                // any mode where the target source wasn't represented as a
+                // tab — defeating the purpose of `gl`/`gs`/`gr`/`gf`/`gy`.
+                let Some(mode) = SourceMode::from_scheme(&scheme) else {
+                    self.set_status(format!("unknown source: {scheme}"));
+                    return Ok(());
+                };
+                if self.dispatcher.get(mode.scheme()).is_none() {
                     self.set_status(format!("source not registered: {scheme}"));
+                    return Ok(());
                 }
+                self.set_mode(mode).await;
             }
             Action::VolumeUp => {
                 if self.volume_debounce_fired() {
@@ -1255,6 +1280,10 @@ impl App {
                 s.top = t;
                 s.descend_uris.pop();
                 let origin = s.origin_tabs.pop().unwrap_or(None);
+                // Any in-flight stream targets the view we just popped; its
+                // batches will be filtered by the depth check in
+                // handle_row_batch. Clear the flag so the header dots stop.
+                s.streaming = false;
                 self.dirty = true;
                 origin
             } else {
@@ -2020,6 +2049,7 @@ impl App {
                     s.cursor = 0;
                     s.top = 0;
                     s.descend_epoch = s.descend_epoch.wrapping_add(1);
+                    s.streaming = true;
                     Some(ViewId {
                         category: cat,
                         depth: s.stack.len(),
@@ -2319,6 +2349,7 @@ impl App {
             s.descend_uris.clear();
             s.origin_tabs.clear();
             s.loaded = false;
+            s.streaming = false;
             s.cursor = 0;
             s.top = 0;
         }
@@ -2591,6 +2622,11 @@ impl App {
             out.push("Like / Unlike");
             out.push("Download");
         }
+        // Browser handoff — any Spotify or YouTube row can be opened on
+        // the web. Linux: xdg-open via the `open` crate. macOS: open(1).
+        if (is_spotify && web_url_for_uri(&uri).is_some()) || is_youtube {
+            out.push("Open in browser");
+        }
         out
     }
 
@@ -2617,7 +2653,27 @@ impl App {
             "Remove from playlist" => self.remove_hovered_from_current_playlist().await,
             "Song radio" => self.queue_song_radio().await,
             "Download" => self.download_hovered().await,
+            "Open in browser" => self.open_hovered_in_browser(),
             _ => {}
+        }
+    }
+
+    /// Open the hovered row's canonical web URL in the user's default
+    /// browser. The `open` crate routes through `open(1)` on macOS and
+    /// `xdg-open` on Linux, so the same call works on both. Status toast
+    /// reports success or the underlying error.
+    fn open_hovered_in_browser(&mut self) {
+        let Some(uri) = self.hovered_uri() else {
+            self.set_status("nothing under cursor");
+            return;
+        };
+        let Some(url) = web_url_for_uri(&uri) else {
+            self.set_status(format!("no web URL for {uri}"));
+            return;
+        };
+        match open::that_detached(&url) {
+            Ok(()) => self.set_status(format!("opened: {url}")),
+            Err(e) => self.set_status(format!("open failed: {e}")),
         }
     }
 
@@ -3048,6 +3104,12 @@ impl App {
             }
         }
         self.tick_counter = self.tick_counter.wrapping_add(1);
+        // Repaint when any browse view is mid-stream so the animated
+        // header dots actually advance (otherwise the tick early-returns
+        // below for non-playing sessions and the dots freeze).
+        if self.category_states.values().any(|s| s.streaming) {
+            self.dirty = true;
+        }
         let playing = matches!(
             self.playback.as_ref().map(|p| p.state),
             Some(PlayState::Playing)
@@ -3284,11 +3346,16 @@ impl App {
             self.now_playing_uri = None;
             self.now_playing_aspect = None;
             self.current_liked = None;
+            set_window_title("fuga");
             return;
         };
         if self.now_playing_uri.as_deref() == Some(&cur.uri) {
             return;
         }
+        // Window title: `<title> — <artist>` capped at 60 chars so tmux /
+        // kitty embedded multiplexers don't truncate ugly. Set on every
+        // track change.
+        set_window_title(&format_window_title(&cur.display.title, cur.display.artist.as_deref()));
         // Don't auto-reset art_collapsed on track change — preference now
         // persists across runs, and users on small terminals want it to
         // stay collapsed.
@@ -3460,6 +3527,7 @@ impl App {
         // the overlay; we don't pass anything through to underlying widgets.
         if self.expanded_art_uri.is_some() {
             self.expanded_art_uri = None;
+            self.expanded_art_protocol = None;
             self.dirty = true;
             return Action::None;
         }
@@ -3480,33 +3548,15 @@ impl App {
                 }
                 Action::Up
             }
-            MouseEventKind::Down(MouseButton::Right) => {
-                if let Some(bar) = self.progress_bar_rect {
-                    if rect_contains(&bar, x, y) {
-                        return Action::PlayPause;
-                    }
-                }
-                if let Some(r) = self.now_playing_text_rect {
-                    if rect_contains(&r, x, y) {
-                        return Action::NextTrack;
-                    }
-                }
-                Action::None
-            }
-            MouseEventKind::Down(MouseButton::Middle) => {
-                if let Some(r) = self.now_playing_text_rect {
-                    if rect_contains(&r, x, y) {
-                        return Action::PlayPause;
-                    }
-                }
-                Action::None
-            }
+            MouseEventKind::Down(MouseButton::Right) => Action::None,
+            MouseEventKind::Down(MouseButton::Middle) => Action::None,
             MouseEventKind::Down(MouseButton::Left) => {
                 // Expanded-art overlay active: any click closes. Mouse
                 // handler short-circuits above this match arm too, but
                 // keep the explicit close here for safety.
                 if self.expanded_art_uri.is_some() {
                     self.expanded_art_uri = None;
+                    self.expanded_art_protocol = None;
                     self.dirty = true;
                     return Action::None;
                 }
@@ -3537,18 +3587,22 @@ impl App {
                         return Action::SeekToPermille(permille);
                     }
                 }
-                // Now-playing text rows: left click = previous track.
-                // Volume rect was matched first above for scroll; check it
-                // again so left-clicks on the volume strip don't
-                // accidentally trigger a previous-track jump.
-                if let Some(r) = self.now_playing_text_rect {
-                    if rect_contains(&r, x, y)
-                        && !self
-                            .volume_rect
-                            .map(|v| rect_contains(&v, x, y))
-                            .unwrap_or(false)
-                    {
+                // Transport widgets on row 0 of the bottom bar. Check
+                // these before the broader volume rect since prev/next
+                // rects sit inside it.
+                if let Some(r) = self.prev_rect {
+                    if rect_contains(&r, x, y) {
                         return Action::PrevTrack;
+                    }
+                }
+                if let Some(r) = self.playpause_rect {
+                    if rect_contains(&r, x, y) {
+                        return Action::PlayPause;
+                    }
+                }
+                if let Some(r) = self.next_rect {
+                    if rect_contains(&r, x, y) {
+                        return Action::NextTrack;
                     }
                 }
                 // Tab bar?
@@ -4053,6 +4107,7 @@ async fn run_loop(
                             Action::Quit => app.shutdown.cancel(),
                             _ => {
                                 app.expanded_art_uri = None;
+                                app.expanded_art_protocol = None;
                                 app.dirty = true;
                             }
                         }
@@ -4149,4 +4204,65 @@ fn tick_interval() -> Interval {
     let mut i = time::interval(Duration::from_millis(250));
     i.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     i
+}
+
+/// Render `<title> — <artist>` (or just `<title>`) and truncate to a
+/// terminal-multiplexer-friendly length. tmux's status-line / kitty's
+/// tab bar can both eat long titles; 60 chars is the sweet spot for
+/// "fits in 80-col status without truncation while still informative."
+fn format_window_title(title: &str, artist: Option<&str>) -> String {
+    const MAX: usize = 60;
+    let raw = match artist {
+        Some(a) if !a.is_empty() => format!("{title} — {a}"),
+        _ => title.to_string(),
+    };
+    if raw.chars().count() <= MAX {
+        return raw;
+    }
+    let mut out: String = raw.chars().take(MAX.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// Set the terminal window title (OSC 2). Works in tmux passthrough,
+/// kitty, iTerm2, GNOME Terminal — anywhere crossterm's SetTitle is
+/// supported. Silently no-ops if the terminal doesn't honor OSC.
+fn set_window_title(title: &str) {
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(title));
+}
+
+/// Map an internal URI to its canonical https URL for the "Open in
+/// browser" action. Returns None for sources without a web presence
+/// (local files, radio streams, SomaFM channels).
+///
+/// Spotify URIs `spotify:<kind>:<id>` map to
+/// `https://open.spotify.com/<kind>/<id>` for any supported `<kind>`
+/// (track, album, artist, playlist, show, episode).
+///
+/// YouTube URIs `youtube:<video_id>` map to
+/// `https://www.youtube.com/watch?v=<video_id>`.
+pub fn web_url_for_uri(uri: &str) -> Option<String> {
+    if let Some(rest) = uri.strip_prefix("spotify:") {
+        // Strip the leading kind segment from URIs like "spotify:track:abc"
+        // and reassemble the path. Reject malformed inputs.
+        let mut parts = rest.splitn(2, ':');
+        let kind = parts.next()?;
+        let id = parts.next()?;
+        if id.is_empty() {
+            return None;
+        }
+        return match kind {
+            "track" | "album" | "artist" | "playlist" | "show" | "episode" => {
+                Some(format!("https://open.spotify.com/{kind}/{id}"))
+            }
+            _ => None,
+        };
+    }
+    if let Some(id) = uri.strip_prefix("youtube:") {
+        if id.is_empty() {
+            return None;
+        }
+        return Some(format!("https://www.youtube.com/watch?v={id}"));
+    }
+    None
 }
