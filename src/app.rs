@@ -530,6 +530,25 @@ impl App {
         self.available_modes[next_idx]
     }
 
+    /// Theme tinted by the *playing* track's source rather than the active
+    /// browse mode. Falls back to the active-mode theme when nothing is
+    /// playing or the playing scheme doesn't map to a known `SourceMode`.
+    /// Used for now-playing visuals (art panel border, bottom-bar title) so
+    /// they stay tied to what's actually playing while the user browses
+    /// elsewhere.
+    pub fn playing_theme(&self) -> std::borrow::Cow<'_, Theme> {
+        let scheme = match self.queue.current() {
+            Some(q) => q.source_scheme,
+            None => return std::borrow::Cow::Borrowed(&self.theme),
+        };
+        match SourceMode::from_scheme(scheme) {
+            Some(mode) if mode != self.active_source => std::borrow::Cow::Owned(
+                self.base_theme.clone().with_source_accent(mode),
+            ),
+            _ => std::borrow::Cow::Borrowed(&self.theme),
+        }
+    }
+
     /// Switch source mode: rebuild tab list, swap theme palette, reset active
     /// tab + cursor, force re-fetch of the new root view. Idempotent when
     /// `mode == self.active_source`.
