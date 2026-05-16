@@ -122,12 +122,18 @@ art_width_pct  = 40   # clamped to [15, 100]
 
 ### Spotify setup
 
+Quick version:
+
 1. Create an app at <https://developer.spotify.com/dashboard>. Add
    `http://127.0.0.1:8888/callback` to the app's redirect URIs.
 2. Set `[spotify] enabled = true` and `client_id = "..."` in your config.
 3. Run `fuga --spotify-auth` once. A browser opens; approve. Token persists
    at `~/.local/share/fuga/spotify_tokens.json` (mode 0600).
 4. Run `fuga` normally.
+
+Stuck? `cat docs/spotify-setup.md` (or read it on
+[GitHub](https://github.com/crodorg/fuga/blob/main/docs/spotify-setup.md)) —
+full walkthrough with troubleshooting + every scope explained.
 
 If Spotify and MPD compete for the same ALSA device, route both through
 PulseAudio or PipeWire (both expose a `pulse` device that mixes for you).

@@ -211,7 +211,15 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
     // Standalone auth flow: log in to Spotify, persist token, exit.
     if args.spotify_auth {
         if !config.spotify.enabled || config.spotify.client_id.is_empty() {
-            anyhow::bail!("[spotify] not configured: set enabled=true and client_id");
+            anyhow::bail!(
+                "[spotify] not configured: set `enabled = true` and `client_id = \"...\"` \
+                 in ~/.config/fuga/config.toml.\n\n\
+                 Get a client_id from https://developer.spotify.com/dashboard \
+                 (free; pick any app name; add http://127.0.0.1:{}/callback to redirect URIs).\n\
+                 Full walkthrough: docs/spotify-setup.md (or \
+                 https://github.com/crodorg/fuga/blob/main/docs/spotify-setup.md).",
+                config.spotify.redirect_port
+            );
         }
         let data_dir = config.data_dir();
         std::fs::create_dir_all(&data_dir).ok();
