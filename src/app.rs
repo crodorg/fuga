@@ -644,17 +644,24 @@ impl App {
             } else {
                 None
             };
-            // User-picked sort wins. Otherwise auto-detect. Root views
-            // (depth == 1) fall back to the category default so e.g. Local
-            // Albums lands alpha-sorted even without metadata hints.
+            // Root view (depth 1): respect user's modal-set sort if any,
+            // else auto-detect, else the category default (so Local Albums
+            // still lands alpha-sorted even without sort_hint metadata).
+            // Sub-views (depth > 1): auto-detect wins — album-track listings
+            // need TrackNumber regardless of what sort the parent root used.
             let is_root = view_id.depth == 1;
-            let final_axis = state.sort.or(auto_axis).or_else(|| {
-                if is_root { default_sort_for(view_id.category) } else { None }
-            });
+            let final_axis = if is_root {
+                state.sort.or(auto_axis).or_else(|| default_sort_for(view_id.category))
+            } else {
+                auto_axis
+            };
             if let Some(axis) = final_axis {
                 if let Some(view) = state.stack.last_mut() {
                     sort_library_view(view, axis);
-                    if state.sort.is_none() {
+                    // Root: only set state.sort if user hasn't picked one yet.
+                    // Sub-view: overwrite so the sort modal opens pre-selected
+                    // to the auto-detected axis the user just landed in.
+                    if !is_root || state.sort.is_none() {
                         state.sort = Some(axis);
                     }
                 }
@@ -1370,6 +1377,18 @@ impl App {
             Some(s) => s,
             None => {
                 self.set_status(format!("source missing: {scheme}"));
+                if let Some(s) = self.category_states.get_mut(&cat) {
+                    s.stack = vec![LibraryView::Entries {
+                        scheme,
+                        label: cat.label().to_string(),
+                        entries: Vec::new(),
+                    }];
+                    s.cursor = 0;
+                    s.top = 0;
+                    s.loaded = true;
+                    s.streaming = false;
+                }
+                self.dirty = true;
                 return;
             }
         };
@@ -1392,8 +1411,10 @@ impl App {
             s.cursor = 0;
             s.top = 0;
             s.loaded = true;
+            // descend_uris stays empty at root (only filled on DescendEntry);
+            // `current_descend_uri` and the playlist-membership check both
+            // depend on that invariant.
             s.descend_uris.clear();
-            s.descend_uris.push(uri.clone());
             s.parent_cursors.clear();
             s.origin_tabs.clear();
             s.descend_epoch = s.descend_epoch.wrapping_add(1);
