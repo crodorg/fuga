@@ -588,12 +588,15 @@ fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option
         }
         _ => base_title,
     };
-    // Animated dots while the streaming task is feeding rows into this
-    // view, rendered as a right-aligned secondary title on the block.
-    // tick_counter advances every 250ms so phase cycles ~750ms.
+    // Animated `loading…` indicator while the streaming task is feeding
+    // rows into this view, rendered as a right-aligned secondary title on
+    // the block. tick_counter advances every 250ms so phase cycles ~750ms.
+    // "loading" prefix keeps the indicator readable on a busy header; the
+    // bare dot dance was easy to miss at the very edge.
     let right_title = if app.category_states.get(&cat).map(|s| s.streaming).unwrap_or(false) {
         let phase = (app.tick_counter as usize) % 3;
-        Some(match phase { 0 => ".", 1 => "..", _ => "..." }.to_string())
+        let dots = match phase { 0 => ".  ", 1 => ".. ", _ => "..." };
+        Some(format!("loading{dots}"))
     } else {
         None
     };
