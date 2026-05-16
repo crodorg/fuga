@@ -1491,6 +1491,7 @@ dependencies = [
  "dirs",
  "futures",
  "image",
+ "indexmap",
  "librespot",
  "librespot-metadata",
  "lru 0.18.0",

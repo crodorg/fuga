@@ -171,7 +171,7 @@ pub struct App {
     /// Per-source-scheme tab override map from `[ui.tabs]`. Consulted on
     /// every `set_mode()` so the bar swaps to the user's mode-specific
     /// list when they hit `t`.
-    pub tab_overrides: HashMap<String, Vec<String>>,
+    pub tab_overrides: indexmap::IndexMap<String, Vec<String>>,
     pub active_tab_idx: usize,
     pub tab_alignment: TabAlignment,
     /// Per-browse-category state. Queue / Search keep their own fields.
@@ -413,7 +413,7 @@ impl App {
         base_theme: Theme,
         hooks: Hooks,
         tabs: Vec<Category>,
-        tab_overrides: HashMap<String, Vec<String>>,
+        tab_overrides: indexmap::IndexMap<String, Vec<String>>,
         tab_alignment: TabAlignment,
         active_source: SourceMode,
         available_modes: Vec<SourceMode>,

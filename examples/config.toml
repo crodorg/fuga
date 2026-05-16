@@ -42,6 +42,10 @@ radio_split         = false       # true → separate Radio + SomaFM tabs
 # stations, radio, somafm, spotify, podcasts, youtube, search.
 # Unknown ids are skipped with a warning.
 #
+# Key order matters: the FIRST registered source listed here becomes
+# the startup source mode. Put `spotify = [...]` before `local = [...]`
+# and fuga launches in Spotify mode.
+#
 # NOTE: [ui.tabs] is a TOML sub-table — keep it the LAST block in [ui].
 # Flat [ui] keys placed below it would be parsed as children of
 # [ui.tabs] and fail to deserialize.

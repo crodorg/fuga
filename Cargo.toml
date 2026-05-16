@@ -26,6 +26,7 @@ mpd_client = "1"
 
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+indexmap = { version = "2", features = ["serde"] }
 
 anyhow = "1"
 thiserror = "1"

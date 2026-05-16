@@ -350,9 +350,20 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
     crate::hooks::on_startup(&hooks);
     let tab_alignment = crate::config::TabAlignment::from_str(&config.ui.tab_alignment);
     let modes = available_modes(&dispatcher);
-    let active_source = modes
-        .first()
-        .copied()
+    // Startup source priority:
+    //   1. First key of `[ui.tabs]` if registered — lets the user pick the
+    //      landing source by ordering keys (`spotify = ...` before
+    //      `local = ...` boots into Spotify).
+    //   2. First registered source from the canonical cycle order
+    //      (Local, Spotify, YouTube, SomaFM, Radio).
+    //   3. SourceMode::Local as a final fallback.
+    let active_source = config
+        .ui
+        .tabs
+        .keys()
+        .find_map(|k| crate::types::SourceMode::from_scheme(k))
+        .filter(|m| dispatcher.get(m.scheme()).is_some())
+        .or_else(|| modes.first().copied())
         .unwrap_or(crate::types::SourceMode::Local);
     let tabs = tabs_for_mode(active_source, &config.ui.tabs);
     let theme = base_theme.clone().with_source_accent(active_source);
@@ -447,7 +458,7 @@ pub fn available_modes(dispatcher: &Dispatcher) -> Vec<crate::types::SourceMode>
 /// whatever the new mode resolves to.
 pub fn tabs_for_mode(
     mode: crate::types::SourceMode,
-    overrides: &std::collections::HashMap<String, Vec<String>>,
+    overrides: &indexmap::IndexMap<String, Vec<String>>,
 ) -> Vec<crate::types::Category> {
     use crate::types::{Category, SourceMode};
     if let Some(ids) = overrides.get(mode.scheme()) {
