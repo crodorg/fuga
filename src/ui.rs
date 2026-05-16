@@ -588,6 +588,15 @@ fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option
         }
         _ => base_title,
     };
+    // Animated dots while the streaming task is feeding rows into this
+    // view. tick_counter advances every 250ms, so phase cycles ~750ms.
+    let title = if app.category_states.get(&cat).map(|s| s.streaming).unwrap_or(false) {
+        let phase = (app.tick_counter as usize) % 3;
+        let dots = match phase { 0 => " .", 1 => " ..", _ => " ..." };
+        format!("{title}{dots}")
+    } else {
+        title
+    };
 
     let (cursor_raw, mut top) = match app.category_states.get(&cat) {
         Some(s) => (s.cursor, s.top),

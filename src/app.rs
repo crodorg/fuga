@@ -110,6 +110,12 @@ pub struct CategoryState {
     /// back-then-redescend-same-URI sequence can't route the old
     /// stream's late batches into the new view.
     pub descend_epoch: u64,
+    /// True while a streaming browse task is feeding rows into the
+    /// current top-of-stack view. Drives the animated `...` indicator
+    /// in the view header. Set on descent push; cleared by
+    /// `handle_row_batch` when a batch carries `finished == true` or
+    /// reports an error.
+    pub streaming: bool,
 }
 
 impl CategoryState {
@@ -124,6 +130,7 @@ impl CategoryState {
             descend_uris: Vec::new(),
             origin_tabs: Vec::new(),
             descend_epoch: 0,
+            streaming: false,
         }
     }
 }
@@ -224,7 +231,7 @@ pub struct App {
     pub last_volume_at: Option<Instant>,
     pub shuffle: bool,
     pub repeat: RepeatMode,
-    tick_counter: u32,
+    pub tick_counter: u32,
 
     pub keymap: Keymap,
     pub leader: Option<LeaderMap>,
@@ -600,11 +607,14 @@ impl App {
             }
             Ok(_) => {} // empty batch — finished sentinel or no-op page
             Err(e) => {
-                self.set_status(format!("load failed: {e}"));
+                state.streaming = false;
+                let msg = format!("load failed: {e}");
+                self.set_status(msg);
                 return;
             }
         }
         if finished {
+            state.streaming = false;
             // Auto-sort once the full stream is in. Mirrors the non-streaming
             // path's heuristic: track_no → TrackNumber; sort_hint OR spotify
             // playlist URI → RecentlyAdded. The spotify-playlist override
@@ -680,6 +690,7 @@ impl App {
             s.cursor = 0;
             s.top = 0;
             s.loaded = false;
+            s.streaming = false;
             // sort: keep prior preference so re-fetch lands on the same axis.
         }
         let from = self.last_active_scheme;
@@ -1257,6 +1268,10 @@ impl App {
                 s.top = t;
                 s.descend_uris.pop();
                 let origin = s.origin_tabs.pop().unwrap_or(None);
+                // Any in-flight stream targets the view we just popped; its
+                // batches will be filtered by the depth check in
+                // handle_row_batch. Clear the flag so the header dots stop.
+                s.streaming = false;
                 self.dirty = true;
                 origin
             } else {
@@ -2022,6 +2037,7 @@ impl App {
                     s.cursor = 0;
                     s.top = 0;
                     s.descend_epoch = s.descend_epoch.wrapping_add(1);
+                    s.streaming = true;
                     Some(ViewId {
                         category: cat,
                         depth: s.stack.len(),
@@ -2321,6 +2337,7 @@ impl App {
             s.descend_uris.clear();
             s.origin_tabs.clear();
             s.loaded = false;
+            s.streaming = false;
             s.cursor = 0;
             s.top = 0;
         }
@@ -3050,6 +3067,12 @@ impl App {
             }
         }
         self.tick_counter = self.tick_counter.wrapping_add(1);
+        // Repaint when any browse view is mid-stream so the animated
+        // header dots actually advance (otherwise the tick early-returns
+        // below for non-playing sessions and the dots freeze).
+        if self.category_states.values().any(|s| s.streaming) {
+            self.dirty = true;
+        }
         let playing = matches!(
             self.playback.as_ref().map(|p| p.state),
             Some(PlayState::Playing)
