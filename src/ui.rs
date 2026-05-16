@@ -894,41 +894,63 @@ fn render_bottom_bar(app: &mut App, f: &mut Frame<'_>, area: Rect) {
         None => ("(idle)".into(), String::new(), String::new()),
     };
 
-    // Row 0: title (accent) | liked + state + VOL. State left of volume.
-    // Playing = accent/light; Paused = dim. Liked badge `[*]` rendered
-    // only when the source reports a known saved state (Spotify); other
-    // sources see no badge slot.
+    // Row 0: title (accent) | `<<  [playing]  >>  VOL`.
+    // `<<` and `>>` glyphs are click targets for prev/next; the state
+    // label is the click target for play/pause. Liked badge moved to
+    // row 1 so this row is purely transport + volume.
     let (state_label, state_style) = match app.playback.as_ref().map(|p| p.state) {
         Some(PlayState::Playing) => ("[playing]", playing_accent),
         Some(PlayState::Paused) => ("[paused] ", app.theme.dim()),
         _ => ("[stopped]", app.theme.dim()),
     };
-    // Liked badge: `[*]` when saved, `[ ]` when not, omitted when unknown
-    // (non-Spotify or before first probe).
+    let vol_str = format!("VOL {:>3}%", app.master_volume);
+    let dim = app.theme.dim();
+    let row0_right = Line::from(vec![
+        Span::styled("<<", playing_accent),
+        Span::raw("  "),
+        Span::styled(state_label, state_style),
+        Span::raw("  "),
+        Span::styled(">>", playing_accent),
+        Span::raw("  "),
+        Span::styled(vol_str, app.theme.volume()),
+    ]);
+    render_text_with_right(f, rows[0], &title, playing_accent, row0_right);
+
+    // Transport widget rects. The right cell sample is the full row-0
+    // right string; widget offsets within it map to the glyph spans.
+    const ROW0_RIGHT_SAMPLE: &str = "<<  [playing]  >>  VOL 100%";
+    let row0_right_rect = right_cell_rect(rows[0], ROW0_RIGHT_SAMPLE);
+    if row0_right_rect.width >= ROW0_RIGHT_SAMPLE.len() as u16 {
+        let base_x = row0_right_rect.x;
+        let y = row0_right_rect.y;
+        app.prev_rect = Some(Rect { x: base_x, y, width: 2, height: 1 });
+        app.playpause_rect = Some(Rect { x: base_x + 4, y, width: 9, height: 1 });
+        app.next_rect = Some(Rect { x: base_x + 15, y, width: 2, height: 1 });
+    } else {
+        app.prev_rect = None;
+        app.playpause_rect = None;
+        app.next_rect = None;
+    }
+    // Volume rect spans the full right cell so scroll-wheel anywhere
+    // on the strip nudges volume (existing behavior). Left-clicks on
+    // the transport rects above are matched before this rect in the
+    // mouse handler.
+    app.volume_rect = Some(row0_right_rect);
+
+    // Row 1: artist (fg) | [liked] · shuf · rep. The liked badge sits
+    // left of shuf/rep on the right edge.
     let liked_badge = match app.current_liked {
-        Some(true) => Some(("[*]", playing_accent)),
-        Some(false) => Some(("[ ]", app.theme.dim())),
+        Some(true) => Some(Span::styled("[*]", playing_accent)),
+        Some(false) => Some(Span::styled("[ ]", dim)),
         None => None,
     };
-    let vol_str = format!("VOL {:>3}%", app.master_volume);
-    let mut right_spans = Vec::with_capacity(5);
-    if let Some((badge, style)) = liked_badge {
-        right_spans.push(Span::styled(badge, style));
-        right_spans.push(Span::raw("  "));
+    let mut row1_spans: Vec<Span<'static>> = Vec::new();
+    if let Some(badge) = liked_badge {
+        row1_spans.push(badge);
+        row1_spans.push(Span::raw("  "));
     }
-    right_spans.push(Span::styled(state_label, state_style));
-    right_spans.push(Span::raw("  "));
-    right_spans.push(Span::styled(vol_str, app.theme.volume()));
-    let right_line = Line::from(right_spans);
-    render_text_with_right(f, rows[0], &title, playing_accent, right_line);
-    // Volume rect: the right-aligned cell on row 0. Reserve the full
-    // right cell (state + spacer + vol) so scroll-wheel anywhere on the
-    // strip nudges volume.
-    app.volume_rect = Some(right_cell_rect(rows[0], "[*]  [playing]  VOL 100%"));
-
-    // Row 1: artist (fg) | shuf · rep.
-    let mode_spans = shuf_rep_spans(app);
-    render_text_with_right(f, rows[1], &artist, app.theme.fg(), Line::from(mode_spans));
+    row1_spans.extend(shuf_rep_spans(app));
+    render_text_with_right(f, rows[1], &artist, app.theme.fg(), Line::from(row1_spans));
 
     // Row 2: album (dim) | SPT · OGG · 320 kbps. Source abbreviated so the
     // line stays short on narrow terminals; codec + kbps come from

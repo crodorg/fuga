@@ -349,6 +349,15 @@ pub struct App {
     /// volume / state cells). Click handler maps mouse buttons to
     /// transport: left = previous, middle = play/pause, right = next.
     pub now_playing_text_rect: Option<Rect>,
+    /// Last-rendered rect of the `<<` previous-track glyph on row 0 of
+    /// the bottom bar. Left-click → Action::PrevTrack.
+    pub prev_rect: Option<Rect>,
+    /// Last-rendered rect of the `[playing]/[paused]/[stopped]` state
+    /// label on row 0. Left-click → Action::PlayPause.
+    pub playpause_rect: Option<Rect>,
+    /// Last-rendered rect of the `>>` next-track glyph on row 0.
+    /// Left-click → Action::NextTrack.
+    pub next_rect: Option<Rect>,
     /// Shared 0..=100 download-progress slot. `255` = no active download.
     /// Updated by the YouTube source's spawned download task; read by
     /// the status-toast renderer.
@@ -505,6 +514,9 @@ impl App {
             playlist_picker: None,
             volume_rect: None,
             now_playing_text_rect: None,
+            prev_rect: None,
+            playpause_rect: None,
+            next_rect: None,
             download_progress: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(255)),
             toast_inbox: std::sync::Arc::new(std::sync::Mutex::new(None)),
             shutdown: CancellationToken::new(),
@@ -3511,27 +3523,8 @@ impl App {
                 }
                 Action::Up
             }
-            MouseEventKind::Down(MouseButton::Right) => {
-                if let Some(bar) = self.progress_bar_rect {
-                    if rect_contains(&bar, x, y) {
-                        return Action::PlayPause;
-                    }
-                }
-                if let Some(r) = self.now_playing_text_rect {
-                    if rect_contains(&r, x, y) {
-                        return Action::NextTrack;
-                    }
-                }
-                Action::None
-            }
-            MouseEventKind::Down(MouseButton::Middle) => {
-                if let Some(r) = self.now_playing_text_rect {
-                    if rect_contains(&r, x, y) {
-                        return Action::PlayPause;
-                    }
-                }
-                Action::None
-            }
+            MouseEventKind::Down(MouseButton::Right) => Action::None,
+            MouseEventKind::Down(MouseButton::Middle) => Action::None,
             MouseEventKind::Down(MouseButton::Left) => {
                 // Expanded-art overlay active: any click closes. Mouse
                 // handler short-circuits above this match arm too, but
@@ -3569,18 +3562,22 @@ impl App {
                         return Action::SeekToPermille(permille);
                     }
                 }
-                // Now-playing text rows: left click = previous track.
-                // Volume rect was matched first above for scroll; check it
-                // again so left-clicks on the volume strip don't
-                // accidentally trigger a previous-track jump.
-                if let Some(r) = self.now_playing_text_rect {
-                    if rect_contains(&r, x, y)
-                        && !self
-                            .volume_rect
-                            .map(|v| rect_contains(&v, x, y))
-                            .unwrap_or(false)
-                    {
+                // Transport widgets on row 0 of the bottom bar. Check
+                // these before the broader volume rect since prev/next
+                // rects sit inside it.
+                if let Some(r) = self.prev_rect {
+                    if rect_contains(&r, x, y) {
                         return Action::PrevTrack;
+                    }
+                }
+                if let Some(r) = self.playpause_rect {
+                    if rect_contains(&r, x, y) {
+                        return Action::PlayPause;
+                    }
+                }
+                if let Some(r) = self.next_rect {
+                    if rect_contains(&r, x, y) {
+                        return Action::NextTrack;
                     }
                 }
                 // Tab bar?
