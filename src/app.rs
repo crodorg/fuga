@@ -105,6 +105,11 @@ pub struct CategoryState {
     /// restores `active_tab_idx` so back from a cross-tab descent
     /// returns to the originating tab.
     pub origin_tabs: Vec<Option<usize>>,
+    /// Monotonic counter bumped on each descend push. Tagged into the
+    /// `ViewId` of any streaming task spawned for this category so a
+    /// back-then-redescend-same-URI sequence can't route the old
+    /// stream's late batches into the new view.
+    pub descend_epoch: u64,
 }
 
 impl CategoryState {
@@ -118,6 +123,7 @@ impl CategoryState {
             parent_cursors: Vec::new(),
             descend_uris: Vec::new(),
             origin_tabs: Vec::new(),
+            descend_epoch: 0,
         }
     }
 }
@@ -128,14 +134,17 @@ impl Default for CategoryState {
     }
 }
 
-/// Identifies a specific browse view by (category, depth-in-stack). Streaming
-/// browse tasks tag each batch with the `ViewId` it was spawned for; the main
-/// loop drops batches whose `ViewId` no longer matches the current view
-/// (user navigated away before the stream finished).
+/// Identifies a specific browse view by (category, depth, epoch). Streaming
+/// browse tasks tag each batch with the `ViewId` it was spawned for; the
+/// main loop drops batches whose `ViewId` no longer matches the current
+/// view. The epoch is bumped on every descent push so a back-then-redescend
+/// sequence — same URI or not — gets a fresh ViewId and the previous
+/// stream's late batches are filtered out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ViewId {
     pub category: Category,
     pub depth: usize,
+    pub epoch: u64,
 }
 
 /// One pagination page (or stream terminator) from a streaming browse task.
@@ -567,7 +576,12 @@ impl App {
     pub fn handle_row_batch(&mut self, batch: RowBatch) {
         let RowBatch { view_id, batch, finished } = batch;
         let Some(state) = self.category_states.get_mut(&view_id.category) else { return };
+        // Epoch guard: dropping batches from a previous descend in the same
+        // category — covers both "user backed out and went elsewhere" and
+        // "user backed out and re-descended (same URI or not)". The depth
+        // check stays as a cheap pre-filter for the common case.
         if state.stack.len() != view_id.depth { return }
+        if state.descend_epoch != view_id.epoch { return }
         let originating_uri = state.descend_uris.last().cloned().unwrap_or_default();
         let Some(LibraryView::Entries { entries, .. }) = state.stack.last_mut() else { return };
         match batch {
@@ -2005,7 +2019,12 @@ impl App {
                     });
                     s.cursor = 0;
                     s.top = 0;
-                    Some(ViewId { category: cat, depth: s.stack.len() })
+                    s.descend_epoch = s.descend_epoch.wrapping_add(1);
+                    Some(ViewId {
+                        category: cat,
+                        depth: s.stack.len(),
+                        epoch: s.descend_epoch,
+                    })
                 } else {
                     None
                 };
