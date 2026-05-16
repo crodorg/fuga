@@ -105,6 +105,11 @@ pub struct CategoryState {
     /// restores `active_tab_idx` so back from a cross-tab descent
     /// returns to the originating tab.
     pub origin_tabs: Vec<Option<usize>>,
+    /// Monotonic counter bumped on each descend push. Tagged into the
+    /// `ViewId` of any streaming task spawned for this category so a
+    /// back-then-redescend-same-URI sequence can't route the old
+    /// stream's late batches into the new view.
+    pub descend_epoch: u64,
 }
 
 impl CategoryState {
@@ -118,6 +123,7 @@ impl CategoryState {
             parent_cursors: Vec::new(),
             descend_uris: Vec::new(),
             origin_tabs: Vec::new(),
+            descend_epoch: 0,
         }
     }
 }
@@ -126,6 +132,30 @@ impl Default for CategoryState {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Identifies a specific browse view by (category, depth, epoch). Streaming
+/// browse tasks tag each batch with the `ViewId` it was spawned for; the
+/// main loop drops batches whose `ViewId` no longer matches the current
+/// view. The epoch is bumped on every descent push so a back-then-redescend
+/// sequence — same URI or not — gets a fresh ViewId and the previous
+/// stream's late batches are filtered out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewId {
+    pub category: Category,
+    pub depth: usize,
+    pub epoch: u64,
+}
+
+/// One pagination page (or stream terminator) from a streaming browse task.
+/// `finished = true` signals end-of-stream so the main loop can run any
+/// post-load work (auto-sort, status toast clear). `batch` is `Ok(rows)`
+/// for a normal page or `Err(_)` for a mid-stream error.
+#[derive(Debug)]
+pub struct RowBatch {
+    pub view_id: ViewId,
+    pub batch: Result<Vec<Entry>>,
+    pub finished: bool,
 }
 
 pub struct App {
@@ -159,6 +189,12 @@ pub struct App {
     pub protocols: HashMap<String, StatefulProtocol>,
     pub fetching: HashSet<String>,
     pub wake_tx: UnboundedSender<()>,
+    /// Sender side of the row-batch channel. Streaming browse tasks
+    /// (spawned from `LibraryActivate::DescendEntry`) clone this and
+    /// forward each pagination page as a `RowBatch`. The main loop reads
+    /// from the corresponding `row_batch_rx` and appends rows to the
+    /// matching view via `handle_row_batch`.
+    pub row_batch_tx: UnboundedSender<RowBatch>,
     pub thumb_cells: u16,
     /// Vertical-axis size knob for the now-playing art panel, from
     /// `[ui] art_height_pct`. 100 = full available height. Clamped to
@@ -367,7 +403,7 @@ impl App {
         active_source: SourceMode,
         available_modes: Vec<SourceMode>,
         thumb_cycle: Vec<crate::term_probe::ThumbMode>,
-    ) -> (Self, UnboundedReceiver<()>) {
+    ) -> (Self, UnboundedReceiver<()>, UnboundedReceiver<RowBatch>) {
         let mut category_states: HashMap<Category, CategoryState> = HashMap::new();
         for c in &tabs {
             if c.is_browse() {
@@ -375,6 +411,7 @@ impl App {
             }
         }
         let (wake_tx, wake_rx) = mpsc::unbounded_channel();
+        let (row_batch_tx, row_batch_rx) = mpsc::unbounded_channel::<RowBatch>();
         let app = Self {
             tabs,
             tab_overrides,
@@ -394,6 +431,7 @@ impl App {
             protocols: HashMap::new(),
             fetching: HashSet::new(),
             wake_tx,
+            row_batch_tx,
             thumb_cells,
             art_height_pct,
             art_width_pct,
@@ -459,7 +497,7 @@ impl App {
             mpris_last_state: None,
             mpris_last_volume: None,
         };
-        (app, wake_rx)
+        (app, wake_rx, row_batch_rx)
     }
 
     /// Push diff'd playback state to the MPRIS bridge. Cheap when nothing
@@ -528,6 +566,80 @@ impl App {
             .unwrap_or(0);
         let next_idx = (cur_idx + 1) % self.available_modes.len();
         self.available_modes[next_idx]
+    }
+
+    /// Append one streaming row batch to the matching view. Drops the batch
+    /// when the user has navigated away (stack depth changed) so partial
+    /// pages from a stale stream don't pollute a different view. Runs the
+    /// usual auto-sort detection once `batch.finished == true` so disc /
+    /// recently-added ordering still kicks in after the full set arrives.
+    pub fn handle_row_batch(&mut self, batch: RowBatch) {
+        let RowBatch { view_id, batch, finished } = batch;
+        let Some(state) = self.category_states.get_mut(&view_id.category) else { return };
+        // Epoch guard: dropping batches from a previous descend in the same
+        // category — covers both "user backed out and went elsewhere" and
+        // "user backed out and re-descended (same URI or not)". The depth
+        // check stays as a cheap pre-filter for the common case.
+        if state.stack.len() != view_id.depth { return }
+        if state.descend_epoch != view_id.epoch { return }
+        let originating_uri = state.descend_uris.last().cloned().unwrap_or_default();
+        let Some(LibraryView::Entries { entries, .. }) = state.stack.last_mut() else { return };
+        match batch {
+            Ok(rows) if !rows.is_empty() => {
+                entries.extend(rows);
+                self.dirty = true;
+            }
+            Ok(_) => {} // empty batch — finished sentinel or no-op page
+            Err(e) => {
+                self.set_status(format!("load failed: {e}"));
+                return;
+            }
+        }
+        if finished {
+            // Auto-sort once the full stream is in. Mirrors the non-streaming
+            // path's heuristic: track_no → TrackNumber; sort_hint OR spotify
+            // playlist URI → RecentlyAdded. The spotify-playlist override
+            // exists because some playlists don't populate `added_at`, but
+            // the desktop convention is still newest-first.
+            let has_track_no = entries.iter()
+                .any(|e| e.display.as_ref().and_then(|d| d.track_no).is_some());
+            let has_hint = entries.iter()
+                .any(|e| e.display.as_ref().and_then(|d| d.sort_hint).is_some());
+            let is_spotify_playlist = originating_uri.starts_with("spotify:playlist:");
+            let auto_axis = if has_track_no {
+                Some(SortAxis::TrackNumber)
+            } else if is_spotify_playlist || has_hint {
+                Some(SortAxis::RecentlyAdded)
+            } else {
+                None
+            };
+            if let Some(axis) = auto_axis {
+                if let Some(view) = state.stack.last_mut() {
+                    sort_library_view(view, axis);
+                    state.sort = Some(axis);
+                }
+            }
+            self.dirty = true;
+        }
+    }
+
+    /// Theme tinted by the *playing* track's source rather than the active
+    /// browse mode. Falls back to the active-mode theme when nothing is
+    /// playing or the playing scheme doesn't map to a known `SourceMode`.
+    /// Used for now-playing visuals (art panel border, bottom-bar title) so
+    /// they stay tied to what's actually playing while the user browses
+    /// elsewhere.
+    pub fn playing_theme(&self) -> std::borrow::Cow<'_, Theme> {
+        let scheme = match self.queue.current() {
+            Some(q) => q.source_scheme,
+            None => return std::borrow::Cow::Borrowed(&self.theme),
+        };
+        match SourceMode::from_scheme(scheme) {
+            Some(mode) if mode != self.active_source => std::borrow::Cow::Owned(
+                self.base_theme.clone().with_source_accent(mode),
+            ),
+            _ => std::borrow::Cow::Borrowed(&self.theme),
+        }
     }
 
     /// Switch source mode: rebuild tab list, swap theme palette, reset active
@@ -1891,49 +2003,59 @@ impl App {
                     .get(scheme)
                     .ok_or_else(|| anyhow::anyhow!("source missing: {scheme}"))?
                     .clone();
-                let entries = src.browse(&uri).await?;
-                // Album track listings come back with track_no populated;
-                // auto-sort by track # so disc order survives the API's
-                // arbitrary response order. Podcast episode listings come
-                // back with release_date sort_hint; auto-sort recently-added.
-                let mut view = LibraryView::Entries {
-                    scheme,
-                    label,
-                    entries,
-                };
-                let has_track_no = matches!(&view, LibraryView::Entries { entries, .. }
-                    if entries.iter().any(|e| e.display.as_ref().and_then(|d| d.track_no).is_some()));
-                let has_hint = matches!(&view, LibraryView::Entries { entries, .. }
-                    if entries.iter().any(|e| e.display.as_ref().and_then(|d| d.sort_hint).is_some()));
-                // Spotify playlists default to newest-added first regardless
-                // of whether Spotify populated `added_at` on every row —
-                // matches the desktop client and what `Liked Songs` does.
-                let is_spotify_playlist = uri.starts_with("spotify:playlist:");
-                let auto_axis = if has_track_no {
-                    Some(SortAxis::TrackNumber)
-                } else if is_spotify_playlist || has_hint {
-                    Some(SortAxis::RecentlyAdded)
-                } else {
-                    None
-                };
-                if let Some(axis) = auto_axis {
-                    sort_library_view(&mut view, axis);
-                }
-                if let Some(s) = self.category_states.get_mut(&cat) {
+                // Push an empty Entries view synchronously so the user gets
+                // immediate feedback (breadcrumb advances, "loading…" state
+                // is visible). The streaming task then appends rows as each
+                // pagination page lands; `handle_row_batch` runs auto-sort
+                // detection once the stream finishes.
+                let view_id = if let Some(s) = self.category_states.get_mut(&cat) {
                     s.parent_cursors.push((s.cursor, s.top));
                     s.descend_uris.push(uri.clone());
                     s.origin_tabs.push(None);
-                    s.stack.push(view);
+                    s.stack.push(LibraryView::Entries {
+                        scheme,
+                        label,
+                        entries: Vec::new(),
+                    });
                     s.cursor = 0;
                     s.top = 0;
-                    // Reflect the auto-sort in the per-tab sort state so the
-                    // sort modal shows the active axis and the breadcrumb
-                    // hint matches reality.
-                    if let Some(axis) = auto_axis {
-                        s.sort = Some(axis);
-                    }
-                }
+                    s.descend_epoch = s.descend_epoch.wrapping_add(1);
+                    Some(ViewId {
+                        category: cat,
+                        depth: s.stack.len(),
+                        epoch: s.descend_epoch,
+                    })
+                } else {
+                    None
+                };
                 self.dirty = true;
+                if let Some(view_id) = view_id {
+                    let row_tx = self.row_batch_tx.clone();
+                    let uri_owned = uri.clone();
+                    tokio::spawn(async move {
+                        let (batch_tx, mut batch_rx) =
+                            tokio::sync::mpsc::channel::<Result<Vec<Entry>>>(16);
+                        let stream_fut = async move {
+                            src.browse_streaming(&uri_owned, batch_tx).await;
+                        };
+                        let forward_fut = async {
+                            while let Some(batch) = batch_rx.recv().await {
+                                if row_tx
+                                    .send(RowBatch { view_id, batch, finished: false })
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                            let _ = row_tx.send(RowBatch {
+                                view_id,
+                                batch: Ok(Vec::new()),
+                                finished: true,
+                            });
+                        };
+                        tokio::join!(stream_fut, forward_fut);
+                    });
+                }
             }
             LibraryActivate::ExpandAlbum { label } => {
                 let items = self.local.songs_in_album(&label).await?;
@@ -3774,6 +3896,7 @@ pub async fn run(
     mpd_events: ConnectionEvents,
     mut app: App,
     wake_rx: UnboundedReceiver<()>,
+    row_batch_rx: UnboundedReceiver<RowBatch>,
     spotify_events: UnboundedReceiver<crate::source::spotify::SpotifyEvent>,
     mpris: Option<crate::mpris::MprisHandles>,
 ) -> Result<()> {
@@ -3813,6 +3936,7 @@ pub async fn run(
         &mut app,
         mpd_events,
         wake_rx,
+        row_batch_rx,
         spotify_events,
         ipc_rx,
         mpris_event_rx,
@@ -3836,6 +3960,7 @@ async fn run_loop(
     app: &mut App,
     mut mpd_events: ConnectionEvents,
     mut wake_rx: UnboundedReceiver<()>,
+    mut row_batch_rx: UnboundedReceiver<RowBatch>,
     mut spotify_events: UnboundedReceiver<crate::source::spotify::SpotifyEvent>,
     mut ipc_rx: UnboundedReceiver<crate::ipc::IpcRequest>,
     mut mpris_events: Option<UnboundedReceiver<crate::mpris::MprisEvent>>,
@@ -3967,6 +4092,11 @@ async fn run_loop(
                 while wake_rx.try_recv().is_ok() {}
                 app.drain_toast_inbox();
                 app.dirty = true;
+            }
+            batch = row_batch_rx.recv() => {
+                if let Some(b) = batch {
+                    app.handle_row_batch(b);
+                }
             }
             _ = tick.tick() => app.on_tick().await,
             req = ipc_rx.recv() => {

@@ -813,12 +813,20 @@ fn render_search(app: &mut App, f: &mut Frame<'_>, area: Rect) {
 }
 
 fn render_bottom_bar(app: &mut App, f: &mut Frame<'_>, area: Rect) {
+    // Tint border + accent by the *playing* track's source, not the active
+    // browse mode — so the now-playing block stays visually tied to what's
+    // playing while the user browses a different source.
+    let (playing_border, playing_accent) = {
+        let pt = app.playing_theme();
+        (pt.block_border(), pt.accent())
+    };
+
     // No title — state moved next to volume. Title slot otherwise left a
     // single-cell gap in the top border where the play/pause glyph used
     // to live.
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(app.theme.block_border());
+        .border_style(playing_border);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -875,14 +883,14 @@ fn render_bottom_bar(app: &mut App, f: &mut Frame<'_>, area: Rect) {
     // only when the source reports a known saved state (Spotify); other
     // sources see no badge slot.
     let (state_label, state_style) = match app.playback.as_ref().map(|p| p.state) {
-        Some(PlayState::Playing) => ("[playing]", app.theme.accent()),
+        Some(PlayState::Playing) => ("[playing]", playing_accent),
         Some(PlayState::Paused) => ("[paused] ", app.theme.dim()),
         _ => ("[stopped]", app.theme.dim()),
     };
     // Liked badge: `[*]` when saved, `[ ]` when not, omitted when unknown
     // (non-Spotify or before first probe).
     let liked_badge = match app.current_liked {
-        Some(true) => Some(("[*]", app.theme.accent())),
+        Some(true) => Some(("[*]", playing_accent)),
         Some(false) => Some(("[ ]", app.theme.dim())),
         None => None,
     };
@@ -896,7 +904,7 @@ fn render_bottom_bar(app: &mut App, f: &mut Frame<'_>, area: Rect) {
     right_spans.push(Span::raw("  "));
     right_spans.push(Span::styled(vol_str, app.theme.volume()));
     let right_line = Line::from(right_spans);
-    render_text_with_right(f, rows[0], &title, app.theme.accent(), right_line);
+    render_text_with_right(f, rows[0], &title, playing_accent, right_line);
     // Volume rect: the right-aligned cell on row 0. Reserve the full
     // right cell (state + spacer + vol) so scroll-wheel anywhere on the
     // strip nudges volume.
@@ -1251,6 +1259,10 @@ fn render_art_panel(
     };
     app.art_panel_rect = Some(art_rect);
 
+    // Tint by the playing source, not the active browse mode — matches the
+    // bottom-bar tint so the entire now-playing block reads as one unit.
+    let playing_border = app.playing_theme().block_border();
+
     f.render_widget(Clear, art_rect);
 
     // Collapsed mode: art sits flush inside the bottom-bar height, no
@@ -1273,7 +1285,7 @@ fn render_art_panel(
     // TOP border via stitching corners below.
     let block = Block::default()
         .borders(Borders::LEFT | Borders::TOP)
-        .border_style(app.theme.block_border());
+        .border_style(playing_border);
     let inner = block.inner(art_rect);
     f.render_widget(block, art_rect);
 
@@ -1303,7 +1315,7 @@ fn render_art_panel(
     // rightward from this cell. Use ┌ since there's no border above-left.
     if let Some(c) = buf.cell_mut((art_rect.x, art_rect.y)) {
         c.set_symbol("┌");
-        c.set_style(app.theme.block_border());
+        c.set_style(playing_border);
     }
 
     // Top-right corner: art's TOP border ends here, and the body block's
@@ -1312,7 +1324,7 @@ fn render_art_panel(
     if right < term.right() {
         if let Some(c) = buf.cell_mut((right, art_rect.y)) {
             c.set_symbol("┘");
-            c.set_style(app.theme.block_border());
+            c.set_style(playing_border);
         }
     }
 
@@ -1326,7 +1338,7 @@ fn render_art_panel(
         if art_rect.y <= body_bottom {
             if let Some(c) = buf.cell_mut((art_rect.x, body_bottom)) {
                 c.set_symbol("┤");
-                c.set_style(app.theme.block_border());
+                c.set_style(playing_border);
             }
         }
     }

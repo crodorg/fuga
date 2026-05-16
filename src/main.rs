@@ -372,7 +372,7 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
     if !thumb_cycle.contains(&startup_mode) {
         thumb_cycle.insert(0, startup_mode);
     }
-    let (mut app, wake_rx) = App::new(
+    let (mut app, wake_rx, row_batch_rx) = App::new(
         local,
         dispatcher,
         art,
@@ -426,7 +426,7 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
         },
     };
 
-    app::run(config, conn.events, app, wake_rx, spotify_event_rx, mpris).await
+    app::run(config, conn.events, app, wake_rx, row_batch_rx, spotify_event_rx, mpris).await
 }
 
 /// Modes registered with the dispatcher, in canonical cycle order. `t` cycles
