@@ -33,9 +33,11 @@ terminal.
 
 ## Status
 
-v0.1.0 — first public release. Local, radio, SomaFM, and Spotify all work
-end-to-end (browse, play, queue, search, control). Audio dispatcher gates
-source switches so two backends never play at once.
+v0.2.0 — Local, radio, SomaFM, Spotify, and YouTube all work end-to-end
+(browse, play, queue, search, control). Remote sources stream rows into
+the view as each page arrives. macOS media keys + Now Playing widget
+are wired through `MPRemoteCommandCenter`. See
+[CHANGELOG.md](CHANGELOG.md) for the full list.
 
 ## Requirements
 
@@ -53,7 +55,19 @@ source switches so two backends never play at once.
     use kitty mode where possible.
 - Spotify Premium + a developer app (`client_id`) — only if you want Spotify
 
-## Build
+## Install
+
+**Homebrew (macOS, Linuxbrew):**
+
+```sh
+brew install crodorg/fuga/fuga
+```
+
+The tap formula builds from source via `cargo` and pins to the latest
+tagged release. Runtime extras — `brew install mpd yt-dlp` — are opt-in
+depending on which sources you want.
+
+**From source:**
 
 ```sh
 cargo build --release

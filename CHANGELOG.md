@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-05-15
+
+Performance and UX pass. Remote sources stream rows in as each page
+arrives; the now-playing block tints by the *playing* track's source
+even when you browse elsewhere; macOS gets first-class media keys.
+Homebrew install lands as the recommended path on macOS.
+
+### Added
+
+- **Streaming browse** — Spotify and YouTube views render rows as each
+  page arrives instead of blocking on the full pagination. First rows
+  visible in ~200ms (was ~800ms for Saved Albums). Animated loading
+  indicator on the right of the view header while pages are still in.
+- **Source-aware now-playing tint** — art-panel border and bottom-bar
+  title follow the *playing* track's source, not the active browse
+  mode. Browse Local with Spotify playing → now-playing block stays
+  Spotify-green; rest of the UI stays Local-white.
+- **macOS media keys** — Touch Bar / keyboard Play, Pause, Next, Prev
+  drive fuga via `MPRemoteCommandCenter`. macOS "Now Playing" widget
+  reflects fuga's current track. Background daemon-like via
+  NSApplication Accessory policy (no dock icon).
+- **XDG paths on macOS** — `$XDG_CONFIG_HOME`, `$XDG_CACHE_HOME`,
+  `$XDG_DATA_HOME` are honored (otherwise falls back to
+  `~/Library/Application Support/fuga`).
+- **`[ui.tabs]` per-source tab override** — each source picks its own
+  tab list. Source key order in `[ui.tabs]` also drives the `t`-cycle
+  order and the startup source.
+- **`[youtube] download_dir`** — explicit override; falls back to MPD
+  `music_directory` → XDG-Downloads → `~/Downloads`.
+- **`art_height_pct` / `art_width_pct`** — resize the album-art panel
+  by percent. Lanczos3 scaling.
+- **Window title reflects playing track** — picked up by tmux, window
+  managers, waybar `title` modules.
+- **Explicit transport row** on the bottom bar: `<<  [▶ playing]  >>`.
+- **"Open in browser" action** on Spotify and YouTube rows.
+- **`g`-leader source jumps** (`g s`, `g l`, `g y`, `g r`, `g f`)
+  switch full source mode, not just the active tab.
+
+### Fixed
+
+- `/` filter clears on descend; `Esc` cancels a committed filter (was:
+  only cleared the input buffer, left the filter active).
+- Filter no longer persists across tab switches.
+- Album-art scaling fills the configured rect (was: capped at native
+  size, left small art floating in a half-empty panel).
+- Album cell collapses when it matches the row title.
+- Cross-tab `Esc`-back restores the originating tab.
+- `seek_back` / `seek_forward` no longer shadowed by example-config
+  default overrides.
+- Expanded-art protocol isolated from inline thumb cache so the two
+  don't fight over the same Kitty placement IDs.
+- Worker-thread panics on macOS now exit cleanly instead of hanging
+  the UI.
+
+### Changed
+
+- Loading indicator moved from the view body to the view-header right
+  edge; animates `loading.  /loading.. /loading...` while pages are
+  still arriving; 600ms minimum visibility so fast paths still
+  register.
+- Homebrew tap is the recommended macOS install path:
+  `brew install crodorg/fuga/fuga`.
+
 ## [0.1.0] — 2026-05-12
 
 First public release. Local files, internet radio, SomaFM, Spotify, and
