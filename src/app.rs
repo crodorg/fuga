@@ -2622,6 +2622,11 @@ impl App {
             out.push("Like / Unlike");
             out.push("Download");
         }
+        // Browser handoff — any Spotify or YouTube row can be opened on
+        // the web. Linux: xdg-open via the `open` crate. macOS: open(1).
+        if (is_spotify && web_url_for_uri(&uri).is_some()) || is_youtube {
+            out.push("Open in browser");
+        }
         out
     }
 
@@ -2648,7 +2653,27 @@ impl App {
             "Remove from playlist" => self.remove_hovered_from_current_playlist().await,
             "Song radio" => self.queue_song_radio().await,
             "Download" => self.download_hovered().await,
+            "Open in browser" => self.open_hovered_in_browser(),
             _ => {}
+        }
+    }
+
+    /// Open the hovered row's canonical web URL in the user's default
+    /// browser. The `open` crate routes through `open(1)` on macOS and
+    /// `xdg-open` on Linux, so the same call works on both. Status toast
+    /// reports success or the underlying error.
+    fn open_hovered_in_browser(&mut self) {
+        let Some(uri) = self.hovered_uri() else {
+            self.set_status("nothing under cursor");
+            return;
+        };
+        let Some(url) = web_url_for_uri(&uri) else {
+            self.set_status(format!("no web URL for {uri}"));
+            return;
+        };
+        match open::that_detached(&url) {
+            Ok(()) => self.set_status(format!("opened: {url}")),
+            Err(e) => self.set_status(format!("open failed: {e}")),
         }
     }
 
@@ -4204,4 +4229,40 @@ fn format_window_title(title: &str, artist: Option<&str>) -> String {
 /// supported. Silently no-ops if the terminal doesn't honor OSC.
 fn set_window_title(title: &str) {
     let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(title));
+}
+
+/// Map an internal URI to its canonical https URL for the "Open in
+/// browser" action. Returns None for sources without a web presence
+/// (local files, radio streams, SomaFM channels).
+///
+/// Spotify URIs `spotify:<kind>:<id>` map to
+/// `https://open.spotify.com/<kind>/<id>` for any supported `<kind>`
+/// (track, album, artist, playlist, show, episode).
+///
+/// YouTube URIs `youtube:<video_id>` map to
+/// `https://www.youtube.com/watch?v=<video_id>`.
+pub fn web_url_for_uri(uri: &str) -> Option<String> {
+    if let Some(rest) = uri.strip_prefix("spotify:") {
+        // Strip the leading kind segment from URIs like "spotify:track:abc"
+        // and reassemble the path. Reject malformed inputs.
+        let mut parts = rest.splitn(2, ':');
+        let kind = parts.next()?;
+        let id = parts.next()?;
+        if id.is_empty() {
+            return None;
+        }
+        return match kind {
+            "track" | "album" | "artist" | "playlist" | "show" | "episode" => {
+                Some(format!("https://open.spotify.com/{kind}/{id}"))
+            }
+            _ => None,
+        };
+    }
+    if let Some(id) = uri.strip_prefix("youtube:") {
+        if id.is_empty() {
+            return None;
+        }
+        return Some(format!("https://www.youtube.com/watch?v={id}"));
+    }
+    None
 }
