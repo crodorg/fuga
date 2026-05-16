@@ -1388,6 +1388,104 @@ impl MusicSource for SpotifySource {
         result
     }
 
+    async fn browse_streaming(
+        &self,
+        path: &str,
+        tx: tokio::sync::mpsc::Sender<Result<Vec<Entry>>>,
+    ) {
+        // Only saved_albums is paginated heavily enough to benefit from
+        // streaming today (PAGE_LIMIT=200 = ~4 round trips per browse).
+        // Other paginated paths fall through to the single-batch default
+        // until we have time to convert each one's per-item builder into
+        // a shareable helper.
+        let (base, offset) = parse_offset(path);
+        if base != "spotify:view:saved_albums" {
+            let _ = tx.send(self.browse(path).await).await;
+            return;
+        }
+        // Cache hit short-circuits streaming: emit the cached page as a
+        // single batch. Mirrors `browse()` so a warm cache feels identical.
+        if cache::is_cacheable(path) {
+            if let cache::CacheHit::Fresh(e) = self.browse_cache.get(path).await {
+                let _ = tx.send(Ok(e)).await;
+                return;
+            }
+        }
+        const BATCH: usize = 50;
+        let api = self.api.lock().await;
+        let mut all: Vec<Entry> = Vec::with_capacity(PAGE_LIMIT);
+        let mut batch: Vec<Entry> = Vec::with_capacity(BATCH);
+        let mut s = api.current_user_saved_albums(None).skip(offset);
+        while let Some(next) = s.next().await {
+            if all.len() >= PAGE_LIMIT {
+                break;
+            }
+            let saved = match next {
+                Ok(s) => s,
+                Err(e) => {
+                    if !batch.is_empty() {
+                        let _ = tx.send(Ok(std::mem::take(&mut batch))).await;
+                    }
+                    let _ = tx
+                        .send(Err(anyhow::Error::new(e).context("paginated saved_albums")))
+                        .await;
+                    return;
+                }
+            };
+            let a = &saved.album;
+            let art = a
+                .images
+                .iter()
+                .min_by_key(|i| i.width.unwrap_or(0))
+                .map(|i| i.url.clone());
+            let year: Option<i32> = a.release_date.get(..4).and_then(|s| s.parse().ok());
+            let year_suffix = year.map(|y| format!(" ({y})")).unwrap_or_default();
+            let sort_hint = parse_release_date_to_ts(&a.release_date);
+            let entry = Entry {
+                uri: a.id.to_string(),
+                label: format!(
+                    "{} — {}{}",
+                    a.artists.first().map(|x| x.name.as_str()).unwrap_or(""),
+                    a.name,
+                    year_suffix,
+                ),
+                kind: EntryKind::Album,
+                display: Some(ItemDisplay {
+                    title: a.name.clone(),
+                    artist: a.artists.first().map(|x| x.name.clone()),
+                    album: None,
+                    art_uri: art,
+                    art_uri_full: None,
+                    duration: None,
+                    sort_hint,
+                    track_no: None,
+                }),
+            };
+            all.push(entry.clone());
+            batch.push(entry);
+            if batch.len() >= BATCH {
+                if tx
+                    .send(Ok(std::mem::take(&mut batch)))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        }
+        if all.len() == PAGE_LIMIT {
+            let sentinel = load_more_entry(base, offset + PAGE_LIMIT);
+            all.push(sentinel.clone());
+            batch.push(sentinel);
+        }
+        if !batch.is_empty() {
+            let _ = tx.send(Ok(batch)).await;
+        }
+        if cache::is_cacheable(path) {
+            let _ = self.browse_cache.put(path, all).await;
+        }
+    }
+
 
     async fn resolve(&self, uri: &str) -> Result<Playable> {
         Ok(Playable::LibraryUri(uri.to_string()))

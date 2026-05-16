@@ -19,6 +19,20 @@ pub trait MusicSource: Send + Sync {
 
     async fn search(&self, query: &str) -> Result<Vec<Item>>;
     async fn browse(&self, path: &str) -> Result<Vec<Entry>>;
+    /// Stream rows in batches via `tx` as they become available. Default
+    /// impl awaits `browse()` and sends one batch — sources that paginate
+    /// over multiple network round-trips (currently Spotify saved_albums)
+    /// override this to flush per page so the first page can render while
+    /// later pages are still in flight. Mid-stream errors land in the
+    /// channel as `Err(_)` and stop the stream. The implementation drops
+    /// `tx` on return so the consumer's `recv()` returns `None`.
+    async fn browse_streaming(
+        &self,
+        path: &str,
+        tx: tokio::sync::mpsc::Sender<Result<Vec<Entry>>>,
+    ) {
+        let _ = tx.send(self.browse(path).await).await;
+    }
     async fn resolve(&self, uri: &str) -> Result<Playable>;
 
     async fn play(&self, playable: &Playable) -> Result<()>;
