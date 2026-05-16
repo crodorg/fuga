@@ -589,13 +589,13 @@ fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option
         _ => base_title,
     };
     // Animated dots while the streaming task is feeding rows into this
-    // view. tick_counter advances every 250ms, so phase cycles ~750ms.
-    let title = if app.category_states.get(&cat).map(|s| s.streaming).unwrap_or(false) {
+    // view, rendered as a right-aligned secondary title on the block.
+    // tick_counter advances every 250ms so phase cycles ~750ms.
+    let right_title = if app.category_states.get(&cat).map(|s| s.streaming).unwrap_or(false) {
         let phase = (app.tick_counter as usize) % 3;
-        let dots = match phase { 0 => " .", 1 => " ..", _ => " ..." };
-        format!("{title}{dots}")
+        Some(match phase { 0 => ".", 1 => "..", _ => "..." }.to_string())
     } else {
-        title
+        None
     };
 
     let (cursor_raw, mut top) = match app.category_states.get(&cat) {
@@ -619,6 +619,7 @@ fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option
         visible_row_heights: &mut visible_heights,
         thumb_hits: &mut thumb_hits,
         count_override: None,
+        right_title,
     };
     render_thumb_list(
         f,
@@ -701,6 +702,7 @@ fn render_queue(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option<
         visible_row_heights: &mut visible_heights,
         thumb_hits: &mut thumb_hits,
         count_override: None,
+        right_title: None,
     };
     render_thumb_list(
         f,
@@ -813,6 +815,7 @@ fn render_search(app: &mut App, f: &mut Frame<'_>, area: Rect) {
         visible_row_heights: &mut visible_heights,
         thumb_hits: &mut thumb_hits,
         count_override: Some(data_count),
+        right_title: None,
     };
     render_thumb_list(
         f,
