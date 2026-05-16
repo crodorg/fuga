@@ -3309,11 +3309,16 @@ impl App {
             self.now_playing_uri = None;
             self.now_playing_aspect = None;
             self.current_liked = None;
+            set_window_title("fuga");
             return;
         };
         if self.now_playing_uri.as_deref() == Some(&cur.uri) {
             return;
         }
+        // Window title: `<title> — <artist>` capped at 60 chars so tmux /
+        // kitty embedded multiplexers don't truncate ugly. Set on every
+        // track change.
+        set_window_title(&format_window_title(&cur.display.title, cur.display.artist.as_deref()));
         // Don't auto-reset art_collapsed on track change — preference now
         // persists across runs, and users on small terminals want it to
         // stay collapsed.
@@ -4177,4 +4182,29 @@ fn tick_interval() -> Interval {
     let mut i = time::interval(Duration::from_millis(250));
     i.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     i
+}
+
+/// Render `<title> — <artist>` (or just `<title>`) and truncate to a
+/// terminal-multiplexer-friendly length. tmux's status-line / kitty's
+/// tab bar can both eat long titles; 60 chars is the sweet spot for
+/// "fits in 80-col status without truncation while still informative."
+fn format_window_title(title: &str, artist: Option<&str>) -> String {
+    const MAX: usize = 60;
+    let raw = match artist {
+        Some(a) if !a.is_empty() => format!("{title} — {a}"),
+        _ => title.to_string(),
+    };
+    if raw.chars().count() <= MAX {
+        return raw;
+    }
+    let mut out: String = raw.chars().take(MAX.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// Set the terminal window title (OSC 2). Works in tmux passthrough,
+/// kitty, iTerm2, GNOME Terminal — anywhere crossterm's SetTitle is
+/// supported. Silently no-ops if the terminal doesn't honor OSC.
+fn set_window_title(title: &str) {
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(title));
 }
