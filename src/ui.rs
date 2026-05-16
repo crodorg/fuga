@@ -252,11 +252,18 @@ fn render_expanded_art(app: &mut App, f: &mut Frame<'_>, area: Rect) {
     let Some(uri) = app.expanded_art_uri.clone() else {
         return;
     };
-    // Build protocol from decoded cache if needed.
-    if !app.protocols.contains_key(&uri) {
+    // Build a dedicated protocol for the overlay. Sharing the inline
+    // thumb's protocol (keyed by uri in `app.protocols`) caused a
+    // single-frame top-left zoom artifact in the thumb because the
+    // resize state would flip from small-rect to large-rect mid-frame.
+    let needs_build = match &app.expanded_art_protocol {
+        Some((u, _)) => u != &uri,
+        None => true,
+    };
+    if needs_build {
         if let Some(img) = app.art_cache.peek(&uri) {
             let proto = app.term.picker.new_resize_protocol((*img).clone());
-            app.protocols.insert(uri.clone(), proto);
+            app.expanded_art_protocol = Some((uri.clone(), proto));
         }
     }
 
@@ -313,7 +320,7 @@ fn render_expanded_art(app: &mut App, f: &mut Frame<'_>, area: Rect) {
         .border_style(app.theme.block_border());
     let inner = block.inner(rect);
     f.render_widget(block, rect);
-    if let Some(proto) = app.protocols.get_mut(&uri) {
+    if let Some((_, proto)) = app.expanded_art_protocol.as_mut() {
         let img = StatefulImage::default().resize(Resize::Fit(None));
         f.render_stateful_widget(img, inner, proto);
     } else {

@@ -313,6 +313,14 @@ pub struct App {
     /// or press any non-allowed key to close. Set by mouse clicks on
     /// inline thumbnails; cleared on overlay-close.
     pub expanded_art_uri: Option<String>,
+    /// Dedicated protocol for the expanded-art overlay. Separate from the
+    /// shared `protocols` map (which is keyed by uri and used by inline
+    /// thumbs) so the overlay's large-rect resize state can't fight with
+    /// the same image's small-rect thumb in the body — that double-render
+    /// caused the "top-left chunk of zoom appears in the icon" flicker on
+    /// `v` toggle. Tuple = (uri, protocol); replaced when the user
+    /// expands a different uri, dropped on overlay close.
+    pub expanded_art_protocol: Option<(String, StatefulProtocol)>,
     /// Last-rendered hit-rects for inline thumbnails (image cell only,
     /// not the row text). Populated by `widgets::thumb_list`; consumed
     /// by `handle_mouse` to detect clicks on the thumb image.
@@ -482,6 +490,7 @@ impl App {
             art_collapsed: false,
             state_path: None,
             expanded_art_uri: None,
+            expanded_art_protocol: None,
             thumb_hits: Vec::new(),
             pinned: std::collections::HashSet::new(),
             action_menu_open: false,
@@ -3453,6 +3462,7 @@ impl App {
         // the overlay; we don't pass anything through to underlying widgets.
         if self.expanded_art_uri.is_some() {
             self.expanded_art_uri = None;
+            self.expanded_art_protocol = None;
             self.dirty = true;
             return Action::None;
         }
@@ -3500,6 +3510,7 @@ impl App {
                 // keep the explicit close here for safety.
                 if self.expanded_art_uri.is_some() {
                     self.expanded_art_uri = None;
+                    self.expanded_art_protocol = None;
                     self.dirty = true;
                     return Action::None;
                 }
@@ -4046,6 +4057,7 @@ async fn run_loop(
                             Action::Quit => app.shutdown.cancel(),
                             _ => {
                                 app.expanded_art_uri = None;
+                                app.expanded_art_protocol = None;
                                 app.dirty = true;
                             }
                         }
