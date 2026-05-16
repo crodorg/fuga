@@ -2056,7 +2056,6 @@ impl App {
                         tokio::join!(stream_fut, forward_fut);
                     });
                 }
-                self.dirty = true;
             }
             LibraryActivate::ExpandAlbum { label } => {
                 let items = self.local.songs_in_album(&label).await?;
