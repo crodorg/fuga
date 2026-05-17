@@ -18,6 +18,9 @@ use rspotify::clients::BaseClient;
 use rspotify::AuthCodePkceSpotify;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
 /// Conservative per-page limit for Spotify list endpoints. Different
 /// endpoints accept different maxes (some 50, some 100, some 20), and
@@ -26,13 +29,40 @@ use serde_json::{json, Value};
 /// pagination instead of asking for one big page.
 pub const SAFE_LIMIT: usize = 20;
 
+/// Global minimum interval between any two Spotify Web API calls.
+/// Mirrors spotatui's `SPOTIFY_API_MIN_INTERVAL` — prevents burst
+/// patterns from triggering 429 cascades on shared client_ids.
+const API_MIN_INTERVAL: Duration = Duration::from_millis(250);
+
+static API_PACING: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+
+/// Block until the per-process pacing interval has elapsed since the last
+/// API call. Updates the timestamp before returning so back-to-back callers
+/// serialize properly.
+async fn pace_api_call() {
+    let lock = API_PACING.get_or_init(|| Mutex::new(None));
+    let mut last = lock.lock().await;
+    if let Some(prev) = *last {
+        let elapsed = prev.elapsed();
+        if elapsed < API_MIN_INTERVAL {
+            tokio::time::sleep(API_MIN_INTERVAL - elapsed).await;
+        }
+    }
+    *last = Some(Instant::now());
+}
+
 /// GET <https://api.spotify.com/v1/{path}>?{query}, normalize the JSON,
-/// then deserialize into `T`. Refreshes the rspotify token on 401 once.
+/// then deserialize into `T`.
+///
+/// Resilience layers (mirrors spotatui):
+/// - 250ms global pacing between API calls (avoid burst 429s)
+/// - 401 → refresh token, retry once
+/// - 429 → honor `Retry-After`, retry up to 3 times
+/// - transient connect/timeout/request errors → backoff, retry up to 3 times
 ///
 /// Uses a fresh `reqwest::Client` (not the caller's `self.http`) so the
 /// default User-Agent is sent. Spotify search/quasi-internal endpoints are
-/// known to misbehave on custom UAs; spotatui sidesteps this by building a
-/// new client each call.
+/// known to misbehave on custom UAs.
 pub async fn get_normalized<T: DeserializeOwned>(
     api: &AuthCodePkceSpotify,
     _http: &reqwest::Client,
@@ -42,15 +72,31 @@ pub async fn get_normalized<T: DeserializeOwned>(
     let http = reqwest::Client::new();
     let url = build_url(path, query)?;
     let mut refreshed = false;
+    let mut attempt: u8 = 0;
+    const MAX_ATTEMPTS: u8 = 4;
 
     loop {
         let token = current_token(api).await?;
-        let resp = http
+        pace_api_call().await;
+        let resp_result = http
             .get(url.clone())
             .bearer_auth(&token)
             .send()
-            .await
-            .context("spotify GET send")?;
+            .await;
+
+        let resp = match resp_result {
+            Ok(r) => r,
+            Err(e) => {
+                if attempt + 1 < MAX_ATTEMPTS
+                    && (e.is_connect() || e.is_timeout() || e.is_request())
+                {
+                    tokio::time::sleep(Duration::from_secs(1 + u64::from(attempt))).await;
+                    attempt += 1;
+                    continue;
+                }
+                return Err(anyhow!("spotify GET send: {e}"));
+            }
+        };
 
         let status = resp.status();
         if status.is_success() {
@@ -76,6 +122,19 @@ pub async fn get_normalized<T: DeserializeOwned>(
         if status == reqwest::StatusCode::UNAUTHORIZED && !refreshed {
             api.refresh_token().await.context("spotify token refresh")?;
             refreshed = true;
+            continue;
+        }
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt + 1 < MAX_ATTEMPTS {
+            let retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|h| h.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(1)
+                .max(1);
+            tokio::time::sleep(Duration::from_secs(retry_after + u64::from(attempt))).await;
+            attempt += 1;
             continue;
         }
 
@@ -238,17 +297,22 @@ pub fn normalize(v: &mut Value) {
             }
             // PublicUser (owner) on SimplifiedPlaylist: same required-fields
             // story. Backfill stubs for missing scalars instead of dropping
-            // (callers DO read playlist.owner.display_name).
+            // (callers DO read playlist.owner.display_name). Spotify also
+            // returns `null` values (not just missing keys) for these
+            // fields on some playlists — overwrite nulls too, otherwise
+            // rspotify's UserId fails to parse with "invalid type: null".
             if let Some(Value::Object(owner)) = map.get_mut("owner") {
-                owner
-                    .entry(String::from("external_urls"))
-                    .or_insert_with(|| json!({}));
-                owner
-                    .entry(String::from("href"))
-                    .or_insert_with(|| json!(""));
-                owner
-                    .entry(String::from("id"))
-                    .or_insert_with(|| json!(""));
+                let needs_string = |v: &Value| !v.is_string();
+                let needs_object = |v: &Value| !v.is_object();
+                if owner.get("id").map_or(true, needs_string) {
+                    owner.insert("id".into(), json!(""));
+                }
+                if owner.get("href").map_or(true, needs_string) {
+                    owner.insert("href".into(), json!(""));
+                }
+                if owner.get("external_urls").map_or(true, needs_object) {
+                    owner.insert("external_urls".into(), json!({}));
+                }
             }
             // Recurse into nested objects so nested tracks/users get patched.
             for (_, nested) in map.iter_mut() {

@@ -246,7 +246,8 @@ mod tests {
                 duration: None,
                 sort_hint: None,
                 track_no: None,
-            },
+                year_hint: None,
+                            },
         }
     }
 

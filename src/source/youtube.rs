@@ -422,7 +422,8 @@ fn saved_to_item(s: &SavedTrack) -> Item {
             duration: s.duration_ms.map(Duration::from_millis),
             sort_hint: None,
             track_no: None,
-        },
+            year_hint: None,
+                        },
     }
 }
 

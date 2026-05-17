@@ -86,6 +86,7 @@ impl LocalSource {
                 duration: song.duration,
                 sort_hint: None,
                 track_no,
+                year_hint: None,
             },
         }
     }
@@ -242,7 +243,8 @@ impl MusicSource for LocalSource {
                         duration: None,
                         sort_hint: None,
                         track_no: None,
-                    };
+                        year_hint: None,
+                                    };
                     out.push(Entry {
                         uri: format!("local:album:{album}"),
                         label: album,
@@ -477,7 +479,8 @@ impl LocalSource {
                             duration: None,
                             sort_hint: None,
                             track_no: None,
-                        }),
+                            year_hint: None,
+                                        }),
                     });
                     cur_is_file = true;
                 }

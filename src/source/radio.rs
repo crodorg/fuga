@@ -80,7 +80,8 @@ impl MusicSource for RadioSource {
                     duration: None,
                     sort_hint: None,
                     track_no: None,
-                }),
+                    year_hint: None,
+                                }),
             })
             .collect())
     }
@@ -177,7 +178,8 @@ fn station_to_item(s: &RadioStation) -> Item {
             duration: None,
             sort_hint: None,
             track_no: None,
-        },
+            year_hint: None,
+                        },
     }
 }
 

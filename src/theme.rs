@@ -24,6 +24,11 @@ pub struct Theme {
     pub volume: Color,
     pub error: Color,
     pub leader_border: Color,
+    /// When true, `with_source_accent` becomes a no-op so source switches
+    /// don't repaint border/accent/selection in source-specific colors.
+    /// Lets the user pick a pure-grayscale `monochrome` preset that stays
+    /// monochrome regardless of which tab they're in.
+    pub monochrome: bool,
 }
 
 impl Theme {
@@ -32,6 +37,7 @@ impl Theme {
             "dracula" => dracula(),
             "nord" => nord(),
             "gruvbox" => gruvbox(),
+            "monochrome" | "mono" => monochrome(),
             _ => default_dark(),
         };
         for (k, v) in &cfg.colors {
@@ -91,19 +97,25 @@ impl Theme {
         Style::default().fg(self.fg)
     }
 
-    /// Per-source palette swap. Mutates `border` + `accent` to signal the
-    /// active source mode visually while preserving the user's selected
-    /// preset for everything else (selection, header, fg/bg).
+    /// Per-source palette swap. Mutates `border`, `accent`, and the
+    /// selection row colors so the highlight matches the active source
+    /// (e.g. red selection in YouTube, green in Spotify). `selection_fg`
+    /// picks black or white per source-bg luminance for readable contrast.
     pub fn with_source_accent(mut self, mode: SourceMode) -> Self {
-        let (border, accent) = match mode {
-            SourceMode::Local => (Color::Gray, Color::White),
-            SourceMode::Spotify => (Color::Green, Color::Green),
-            SourceMode::SomaFm => (Color::Yellow, Color::Yellow),
-            SourceMode::Radio => (Color::Blue, Color::Blue),
-            SourceMode::YouTube => (Color::Red, Color::Red),
+        if self.monochrome {
+            return self;
+        }
+        let (border, accent, sel_bg, sel_fg) = match mode {
+            SourceMode::Local => (Color::Gray, Color::White, Color::Gray, Color::Black),
+            SourceMode::Spotify => (Color::Green, Color::Green, Color::Green, Color::Black),
+            SourceMode::SomaFm => (Color::Yellow, Color::Yellow, Color::Yellow, Color::Black),
+            SourceMode::Radio => (Color::Blue, Color::Blue, Color::Blue, Color::White),
+            SourceMode::YouTube => (Color::Red, Color::Red, Color::Red, Color::White),
         };
         self.border = border;
         self.accent = accent;
+        self.selection_bg = sel_bg;
+        self.selection_fg = sel_fg;
         self
     }
 }
@@ -132,6 +144,30 @@ fn default_dark() -> Theme {
         volume: Color::Green,
         error: Color::Red,
         leader_border: Color::Magenta,
+        monochrome: false,
+    }
+}
+
+/// Pure grayscale preset. Every color token resolves to a gray shade so
+/// the UI reads as monochrome under any terminal palette. `monochrome:
+/// true` also suppresses per-source accent swaps so switching tabs
+/// doesn't reintroduce green/red/blue highlights.
+fn monochrome() -> Theme {
+    Theme {
+        fg: Color::Reset,
+        bg: Color::Reset,
+        border: Color::DarkGray,
+        accent: Color::White,
+        selection_fg: Color::Black,
+        selection_bg: Color::Gray,
+        dim: Color::DarkGray,
+        header: Color::White,
+        progress: Color::Gray,
+        progress_track: Color::DarkGray,
+        volume: Color::Gray,
+        error: Color::White,
+        leader_border: Color::White,
+        monochrome: true,
     }
 }
 
@@ -150,6 +186,7 @@ fn dracula() -> Theme {
         volume: rgb(0x8B, 0xE9, 0xFD),
         error: rgb(0xFF, 0x55, 0x55),
         leader_border: rgb(0xFF, 0x79, 0xC6),
+        monochrome: false,
     }
 }
 
@@ -168,6 +205,7 @@ fn nord() -> Theme {
         volume: rgb(0x81, 0xA1, 0xC1),
         error: rgb(0xBF, 0x61, 0x6A),
         leader_border: rgb(0xB4, 0x8E, 0xAD),
+        monochrome: false,
     }
 }
 
@@ -186,6 +224,7 @@ fn gruvbox() -> Theme {
         volume: rgb(0x83, 0xA5, 0x98),
         error: rgb(0xFB, 0x49, 0x34),
         leader_border: rgb(0xD3, 0x86, 0x9B),
+        monochrome: false,
     }
 }
 

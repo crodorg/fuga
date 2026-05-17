@@ -26,6 +26,12 @@ pub struct ItemDisplay {
     /// sort axis (default for album track listings).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track_no: Option<u32>,
+    /// Release year of the track / album (Gregorian, e.g. 2024). Drives
+    /// the `Year` sort axis with newest-first ordering. Separate from
+    /// `sort_hint` because `sort_hint` carries added-at for the playlist
+    /// "Recently Added" axis — different from "Released In" semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year_hint: Option<i32>,
 }
 
 #[derive(Debug, Clone)]

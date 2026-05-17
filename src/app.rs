@@ -158,11 +158,18 @@ pub struct ViewId {
 /// `finished = true` signals end-of-stream so the main loop can run any
 /// post-load work (auto-sort, status toast clear). `batch` is `Ok(rows)`
 /// for a normal page or `Err(_)` for a mid-stream error.
+///
+/// `is_extend = true` means the batch came from a "load more" activation:
+/// the rows are appended to an already-populated view, cursor jumps to the
+/// first new row, and the auto-sort/pinning pass is skipped (the existing
+/// rows are already in the user's chosen order and re-sorting would lose
+/// the cursor position).
 #[derive(Debug)]
 pub struct RowBatch {
     pub view_id: ViewId,
     pub batch: Result<Vec<Entry>>,
     pub finished: bool,
+    pub is_extend: bool,
 }
 
 pub struct App {
@@ -602,7 +609,7 @@ impl App {
     /// usual auto-sort detection once `batch.finished == true` so disc /
     /// recently-added ordering still kicks in after the full set arrives.
     pub fn handle_row_batch(&mut self, batch: RowBatch) {
-        let RowBatch { view_id, batch, finished } = batch;
+        let RowBatch { view_id, batch, finished, is_extend } = batch;
         let Some(state) = self.category_states.get_mut(&view_id.category) else { return };
         // Epoch guard: dropping batches from a previous descend in the same
         // category — covers both "user backed out and went elsewhere" and
@@ -612,8 +619,12 @@ impl App {
         if state.descend_epoch != view_id.epoch { return }
         let originating_uri = state.descend_uris.last().cloned().unwrap_or_default();
         let Some(LibraryView::Entries { entries, .. }) = state.stack.last_mut() else { return };
+        let mut extend_cursor: Option<usize> = None;
         match batch {
             Ok(rows) if !rows.is_empty() => {
+                if is_extend {
+                    extend_cursor = Some(entries.len());
+                }
                 entries.extend(rows);
                 self.dirty = true;
             }
@@ -624,6 +635,24 @@ impl App {
                 self.set_status(msg);
                 return;
             }
+        }
+        let entries_now = entries.len();
+        if let Some(cursor) = extend_cursor {
+            state.cursor = cursor;
+            tracing::info!(
+                cursor = state.cursor,
+                top = state.top,
+                entries_total = entries_now,
+                "extend: handler appended"
+            );
+        }
+        // Skip auto-sort + pinning on extend: the view is already sorted
+        // from the original descend, and re-running the pass would scramble
+        // the cursor we just set to the first new row.
+        if finished && is_extend {
+            state.streaming = false;
+            self.dirty = true;
+            return;
         }
         if finished {
             state.streaming = false;
@@ -1593,7 +1622,8 @@ impl App {
                 duration: None,
                 sort_hint: None,
                 track_no: None,
-            },
+                year_hint: None,
+                            },
         };
         self.queue.push(qi);
         self.set_status(format!("queued: {uri}"));
@@ -1620,7 +1650,8 @@ impl App {
                 duration: None,
                 sort_hint: None,
                 track_no: None,
-            },
+                year_hint: None,
+                            },
         };
         self.queue.push(qi.clone());
         let last = self.queue.len() - 1;
@@ -1689,7 +1720,8 @@ impl App {
                         duration: None,
                         sort_hint: None,
                         track_no: None,
-                    }),
+                        year_hint: None,
+                                    }),
                 }),
                 _ => None,
             }),
@@ -1714,7 +1746,8 @@ impl App {
                                 duration: None,
                                 sort_hint: None,
                                 track_no: None,
-                            }),
+                                year_hint: None,
+                                            }),
                         }),
                         _ => None,
                     },
@@ -2039,15 +2072,29 @@ impl App {
                     .get(scheme)
                     .ok_or_else(|| anyhow::anyhow!("source missing: {scheme}"))?
                     .clone();
-                let more = src.browse(&uri).await?;
-                if let Some(s) = self.category_states.get_mut(&cat) {
+                // Pop the (load more) sentinel and flip the streaming flag
+                // synchronously so the header dots show immediately. The
+                // browse itself goes on a background task — calling it on
+                // the main loop would freeze the UI for the duration of
+                // mercury hydration + Web API placeholder fallback (tens
+                // of seconds for a large playlist page).
+                let view_id = if let Some(s) = self.category_states.get_mut(&cat) {
                     if let Some(LibraryView::Entries { entries, .. }) = s.stack.last_mut() {
                         entries.pop();
-                        let cursor = entries.len();
-                        entries.extend(more);
-                        s.cursor = cursor;
-                        self.dirty = true;
                     }
+                    s.streaming = true;
+                    s.descend_epoch = s.descend_epoch.wrapping_add(1);
+                    Some(ViewId {
+                        category: cat,
+                        depth: s.stack.len(),
+                        epoch: s.descend_epoch,
+                    })
+                } else {
+                    None
+                };
+                self.dirty = true;
+                if let Some(view_id) = view_id {
+                    spawn_browse_extend(src, uri, view_id, self.row_batch_tx.clone());
                 }
             }
             LibraryActivate::PlayEntry { entry } => {
@@ -2171,7 +2218,7 @@ impl App {
             SortAxis::AlphaAsc => "sort: A-Z",
             SortAxis::AlphaDesc => "sort: Z-A",
             SortAxis::Duration => "sort: duration",
-            SortAxis::Year => "sort: year (alpha fallback)",
+            SortAxis::Year => "sort: year (newest first)",
             SortAxis::RecentlyAdded => "sort: recently-added",
             SortAxis::TrackNumber => "sort: track #",
         };
@@ -3670,7 +3717,8 @@ fn entry_to_queued(scheme: &'static str, e: &Entry) -> QueuedItem {
             duration: None,
             sort_hint: None,
             track_no: None,
-        }),
+            year_hint: None,
+                        }),
     }
 }
 
@@ -3717,7 +3765,7 @@ fn spawn_browse_stream(
         let forward_fut = async {
             while let Some(batch) = batch_rx.recv().await {
                 if row_tx
-                    .send(RowBatch { view_id, batch, finished: false })
+                    .send(RowBatch { view_id, batch, finished: false, is_extend: false })
                     .is_err()
                 {
                     return;
@@ -3732,9 +3780,49 @@ fn spawn_browse_stream(
                 view_id,
                 batch: Ok(Vec::new()),
                 finished: true,
+                is_extend: false,
             });
         };
         tokio::join!(stream_fut, forward_fut);
+    });
+}
+
+/// Spawn the background task for a "load more" activation. Calls
+/// `src.browse(uri)` once (the load-more sentinel encodes the next offset
+/// in its URI: `spotify:playlist:X?offset=200`), then sends the result as
+/// a single batch with `is_extend=true` + `finished=true`. `handle_row_batch`
+/// appends the rows and jumps the cursor to the first new row, skipping
+/// the auto-sort pass so the user's scroll position is preserved.
+///
+/// Runs on its own tokio task so the main event loop keeps drawing while
+/// the load is in flight — without this, mercury hydration + Web API
+/// fallback for placeholders can freeze the UI for tens of seconds.
+fn spawn_browse_extend(
+    src: std::sync::Arc<dyn crate::source::MusicSource>,
+    uri: String,
+    view_id: ViewId,
+    row_tx: tokio::sync::mpsc::UnboundedSender<RowBatch>,
+) {
+    const MIN_VISIBLE_MS: u64 = 600;
+    tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        tracing::info!(uri = %uri, "extend: browse start");
+        let result = src.browse(&uri).await;
+        match &result {
+            Ok(rows) => tracing::info!(uri = %uri, rows = rows.len(), "extend: browse ok"),
+            Err(e) => tracing::warn!(uri = %uri, error = %e, "extend: browse err"),
+        }
+        let elapsed = started.elapsed();
+        let min = std::time::Duration::from_millis(MIN_VISIBLE_MS);
+        if elapsed < min {
+            tokio::time::sleep(min - elapsed).await;
+        }
+        let _ = row_tx.send(RowBatch {
+            view_id,
+            batch: result,
+            finished: true,
+            is_extend: true,
+        });
     });
 }
 
@@ -3848,9 +3936,25 @@ fn sort_library_view(view: &mut LibraryView, axis: SortAxis) {
         let no = it.display.track_no.unwrap_or(u32::MAX);
         (no, it.display.title.to_lowercase())
     }
-    let alpha_asc = matches!(axis, SortAxis::AlphaAsc | SortAxis::Year);
+    // Year sort: newest-first by release year (`-year`), alpha-by-label as
+    // tie-break so tracks released the same year don't jitter randomly.
+    // Rows without a year sink to the bottom (i32::MIN negated = MAX key).
+    fn entry_key_year(e: &Entry) -> (i32, String) {
+        let y = e
+            .display
+            .as_ref()
+            .and_then(|d| d.year_hint)
+            .unwrap_or(i32::MIN);
+        (-y, entry_key_alpha(e))
+    }
+    fn item_key_year(it: &Item) -> (i32, String) {
+        let y = it.display.year_hint.unwrap_or(i32::MIN);
+        (-y, it.display.title.to_lowercase())
+    }
+    let alpha_asc = matches!(axis, SortAxis::AlphaAsc);
     let alpha_desc = matches!(axis, SortAxis::AlphaDesc);
     let by_dur = matches!(axis, SortAxis::Duration);
+    let by_year = matches!(axis, SortAxis::Year);
     let by_recent = matches!(axis, SortAxis::RecentlyAdded);
     let by_track = matches!(axis, SortAxis::TrackNumber);
     match view {
@@ -3861,6 +3965,8 @@ fn sort_library_view(view: &mut LibraryView, axis: SortAxis) {
                 entries.sort_by_cached_key(|e| std::cmp::Reverse(entry_key_alpha(e)));
             } else if by_dur {
                 entries.sort_by_key(entry_key_dur);
+            } else if by_year {
+                entries.sort_by_cached_key(entry_key_year);
             } else if by_recent {
                 entries.sort_by_cached_key(entry_key_recent);
             } else if by_track {
@@ -3874,6 +3980,8 @@ fn sort_library_view(view: &mut LibraryView, axis: SortAxis) {
                 items.sort_by_cached_key(|it| std::cmp::Reverse(it.display.title.to_lowercase()));
             } else if by_dur {
                 items.sort_by_key(item_key_dur);
+            } else if by_year {
+                items.sort_by_cached_key(item_key_year);
             } else if by_recent {
                 items.sort_by_cached_key(item_key_recent);
             } else if by_track {
@@ -3889,6 +3997,8 @@ fn sort_library_view(view: &mut LibraryView, axis: SortAxis) {
                         .sort_by_cached_key(|e| std::cmp::Reverse(entry_key_alpha(e)));
                 } else if by_dur {
                     sec.entries.sort_by_key(entry_key_dur);
+                } else if by_year {
+                    sec.entries.sort_by_cached_key(entry_key_year);
                 } else if by_recent {
                     sec.entries.sort_by_cached_key(entry_key_recent);
                 } else if by_track {

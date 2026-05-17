@@ -167,7 +167,8 @@ fn channel_to_item(c: &Channel) -> Item {
             duration: None,
             sort_hint: None,
             track_no: None,
-        },
+            year_hint: None,
+                        },
     }
 }
 

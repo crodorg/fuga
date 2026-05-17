@@ -149,7 +149,8 @@ impl SpotifySource {
                     duration: Some(std::time::Duration::from_millis(t.duration_ms as u64)),
                     sort_hint: None,
                     track_no: None,
-                }),
+                    year_hint: None,
+                                }),
             })
             .collect())
     }
@@ -186,45 +187,199 @@ impl SpotifySource {
                         duration: None,
                         sort_hint: None,
                         track_no: None,
-                    }),
+                        year_hint: None,
+                                    }),
                 }
             })
             .collect())
     }
 
-    /// Playlist tracks via mercury. Used as fallback when the Web API
-    /// returns 403 (Spotify-curated / algorithmic playlists). Returns the
-    /// full track list — mercury doesn't paginate the same way the Web API
-    /// does, so the caller decides whether to truncate.
-    async fn browse_playlist_via_mercury(&self, playlist_id: &str) -> Result<Vec<Entry>> {
+    /// Playlist tracks via mercury, paginated 200 per page, with a
+    /// permanent per-page cache keyed by mercury revision.
+    ///
+    /// Original working flow restored: cheap mercury call fetches the
+    /// FULL URI list + sort hints, sort newest-first, hydrate only the
+    /// visible window [offset..offset+PAGE_LIMIT], append a `(load more)`
+    /// sentinel if more remain. The user pays one page worth of hydration
+    /// per click; no background task competes with the foreground browse.
+    ///
+    /// Per-page cache key includes the mercury revision so a playlist
+    /// edit (add/remove/reorder) invalidates every cached page for that
+    /// playlist on the next open. Within the same revision, opening a
+    /// previously-loaded page is instant; only new pages pay hydration.
+    async fn browse_playlist_via_mercury(
+        &self,
+        playlist_id: &str,
+        offset: usize,
+        base_path: &str,
+    ) -> Result<Vec<Entry>> {
+        tracing::info!(playlist_id, offset, "mercury: enter");
         self.ensure_player().await?;
-        let g = self.player.lock().await;
-        let p = g
-            .as_ref()
-            .ok_or_else(|| anyhow!("spotify player not initialised"))?;
-        let tracks = metadata::playlist_tracks(&p.session, playlist_id).await?;
-        Ok(tracks
-            .into_iter()
-            .map(|t| Entry {
-                uri: t.uri.clone(),
-                label: format!(
-                    "{} — {}",
-                    t.artist_name.as_deref().unwrap_or(""),
-                    t.name
-                ),
-                kind: EntryKind::Track,
-                display: Some(ItemDisplay {
-                    title: t.name,
-                    artist: t.artist_name,
-                    album: t.album_name,
-                    art_uri: t.art_url,
-                    art_uri_full: t.art_url_full,
-                    duration: Some(std::time::Duration::from_millis(t.duration_ms as u64)),
-                    sort_hint: None,
-                    track_no: None,
-                }),
+        tracing::info!(playlist_id, "mercury: player ready");
+        // Grab session + URI list, then drop the player lock immediately.
+        let (session, sorted_uris, revision) = {
+            let g = self.player.lock().await;
+            let p = g
+                .as_ref()
+                .ok_or_else(|| anyhow!("spotify player not initialised"))?;
+            let session = p.session.clone();
+            drop(g);
+            tracing::info!(playlist_id, "mercury: fetching URI list");
+            let (mut uris, revision) =
+                metadata::playlist_track_uris(&session, playlist_id).await?;
+            let mraw: Vec<i64> = uris.iter().map(|(_, h)| *h).collect();
+            let muniq: std::collections::HashSet<i64> = mraw.iter().copied().collect();
+            tracing::info!(
+                playlist_id,
+                uris = uris.len(),
+                rev = %revision,
+                unique_hints = muniq.len(),
+                first3 = ?&mraw[..mraw.len().min(3)],
+                last3 = ?&mraw[mraw.len().saturating_sub(3)..],
+                "mercury: URI list ok"
+            );
+            // Sort the FULL URI list newest-first before any slicing. The
+            // hint comes from mercury's `attributes.timestamp` when
+            // meaningful, else playlist position. Sorting before pagination
+            // is what makes page 1 the newest adds rather than the
+            // playlist's oldest-added prefix.
+            uris.sort_by(|a, b| b.1.cmp(&a.1));
+            (session, uris, revision)
+        };
+        let total = sorted_uris.len();
+
+        // Cache lookup. Key includes the mercury revision so a playlist
+        // edit invalidates every stored page automatically.
+        let pl_id_str = playlist_id
+            .strip_prefix("spotify:playlist:")
+            .unwrap_or(playlist_id);
+        // Cache key carries a schema version (v2) so a code change to
+        // sort_hint/year_hint semantics auto-invalidates prior on-disk
+        // entries instead of requiring the user to `rm -rf` the cache dir.
+        // Bump this whenever the entry shape or hint semantics change.
+        let cache_key = if revision.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "spotify:plpage:v2:{pl_id_str}::rev={revision}::off={offset}"
+            ))
+        };
+        if let Some(ref key) = cache_key {
+            if let Some((cached, cached_rev)) = self.browse_cache.get_raw(key).await {
+                if cached_rev.as_deref() == Some(revision.as_str()) {
+                    tracing::info!(key = %key, n = cached.len(), "mercury: cache hit");
+                    // On offset=0, opportunistically pull every cached
+                    // subsequent page for this revision and concatenate.
+                    // If the user has paged through the whole playlist in
+                    // a previous session, re-open serves all 500+ rows
+                    // instantly with no "load more" click needed. If any
+                    // page is missing from cache, we fall back to the
+                    // normal "page 0 + load more sentinel" behavior.
+                    if offset == 0 {
+                        return Ok(self
+                            .assemble_cached_pages(pl_id_str, &revision, total, cached)
+                            .await);
+                    }
+                    return Ok(cached);
+                }
+            }
+        }
+
+        // Paginate the visible window.
+        let end = (offset + PAGE_LIMIT).min(total);
+        let window_uris: Vec<String> = sorted_uris
+            .get(offset..end)
+            .unwrap_or(&[])
+            .iter()
+            .map(|(u, _)| u.clone())
+            .collect();
+        tracing::info!(offset, end, total, window = window_uris.len(), "mercury: hydrate window");
+        let hydrated =
+            hydrate_uris_to_entries(&session, &self.api, &self.http, &window_uris).await;
+        tracing::info!(offset, end, "mercury: hydrate done");
+        let mut out: Vec<Entry> = window_uris
+            .iter()
+            .zip(hydrated)
+            .enumerate()
+            .filter_map(|(i, (_uri, maybe_entry))| {
+                let mut e = maybe_entry?;
+                if let Some(d) = e.display.as_mut() {
+                    d.sort_hint = sorted_uris.get(offset + i).map(|(_, h)| *h);
+                }
+                Some(e)
             })
-            .collect())
+            .collect();
+        if end < total {
+            out.push(load_more_entry(base_path, end));
+        }
+
+        // Permanent write under the revision-keyed key. Re-open of the
+        // same page within the same revision is instant.
+        if let Some(key) = cache_key {
+            let _ = self
+                .browse_cache
+                .put_with_revision(&key, out.clone(), Some(revision))
+                .await;
+        }
+
+        Ok(out)
+    }
+
+    /// Walk the per-page cache forward from `page_0` and concatenate every
+    /// stored page for `(playlist_id, revision)` up to `total`. Strips the
+    /// trailing `(load more)` sentinel from intermediate pages so the
+    /// joined list reads like one continuous tracklist. Returns just
+    /// `page_0` (with its sentinel intact) the moment a page is missing,
+    /// so the UI still shows a "load more" affordance for the unfetched
+    /// remainder.
+    async fn assemble_cached_pages(
+        &self,
+        pl_id_str: &str,
+        revision: &str,
+        total: usize,
+        page_0: Vec<Entry>,
+    ) -> Vec<Entry> {
+        // Strip trailing load_more sentinel; we'll only re-add it if we
+        // bail mid-walk.
+        let mut all = page_0.clone();
+        let had_sentinel = matches!(
+            all.last(),
+            Some(e) if matches!(e.kind, EntryKind::Directory)
+                && e.uri.contains("?offset=")
+        );
+        if had_sentinel {
+            all.pop();
+        }
+        let mut off = PAGE_LIMIT;
+        while off < total {
+            let key = format!(
+                "spotify:plpage:v2:{pl_id_str}::rev={revision}::off={off}"
+            );
+            let Some((mut page, rev)) = self.browse_cache.get_raw(&key).await else {
+                // Missing page — return only what we have plus the
+                // original sentinel so the user can resume paging.
+                return page_0;
+            };
+            if rev.as_deref() != Some(revision) {
+                return page_0;
+            }
+            let page_had_sentinel = matches!(
+                page.last(),
+                Some(e) if matches!(e.kind, EntryKind::Directory)
+                    && e.uri.contains("?offset=")
+            );
+            if page_had_sentinel {
+                page.pop();
+            }
+            all.extend(page);
+            off += PAGE_LIMIT;
+        }
+        tracing::info!(
+            playlist_id = %pl_id_str,
+            total = all.len(),
+            "mercury: assembled all pages from cache"
+        );
+        all
     }
 
     /// Song radio: ~30 similar tracks seeded on a single track. Goes
@@ -257,7 +412,8 @@ impl SpotifySource {
                     duration: Some(std::time::Duration::from_millis(t.duration_ms as u64)),
                     sort_hint: None,
                     track_no: None,
-                }),
+                    year_hint: None,
+                                }),
             })
             .collect())
     }
@@ -285,7 +441,8 @@ impl SpotifySource {
                     duration: None,
                     sort_hint: None,
                     track_no: None,
-                }),
+                    year_hint: None,
+                                }),
             })
             .collect())
     }
@@ -339,7 +496,8 @@ impl SpotifySource {
                         duration: None,
                         sort_hint: None,
                         track_no: None,
-                    }),
+                        year_hint: None,
+                                    }),
                 });
             }
             return Ok(out);
@@ -411,7 +569,8 @@ impl SpotifySource {
                             duration: None,
                             sort_hint,
                             track_no: None,
-                        }),
+                            year_hint: None,
+                                        }),
                     });
                 }
                 if out.len() == PAGE_LIMIT {
@@ -457,7 +616,8 @@ impl SpotifySource {
                                 saved.added_at.get(..10).unwrap_or(&saved.added_at),
                             ),
                             track_no: None,
-                        }),
+                            year_hint: None,
+                                        }),
                     });
                 }
                 if out.len() == PAGE_LIMIT {
@@ -543,7 +703,8 @@ impl SpotifySource {
                                 duration: None,
                                 sort_hint: None,
                                 track_no: None,
-                            }),
+                                year_hint: None,
+                                            }),
                         });
                     }
                 }
@@ -582,7 +743,8 @@ impl SpotifySource {
                                     duration: None,
                                     sort_hint: None,
                                     track_no: None,
-                                }),
+                                    year_hint: None,
+                                                }),
                             });
                         }
                     }
@@ -679,7 +841,8 @@ impl SpotifySource {
                             duration: None,
                             sort_hint: None,
                             track_no: None,
-                        }),
+                            year_hint: None,
+                                        }),
                     });
                 }
                 Ok(out)
@@ -779,7 +942,8 @@ impl SpotifySource {
                             duration: None,
                             sort_hint: None,
                             track_no: None,
-                        }),
+                            year_hint: None,
+                                        }),
                     });
                 }
                 Ok(out)
@@ -837,6 +1001,7 @@ impl SpotifySource {
                             )),
                             sort_hint: None,
                             track_no: Some(tr.track_number),
+                            year_hint: None,
                         }),
                     });
                 }
@@ -846,64 +1011,85 @@ impl SpotifySource {
                 Ok(out)
             }
             uri if uri.starts_with("spotify:playlist:") => {
-                // Try Web API first (fast). On 403 (Spotify-curated /
-                // algorithmic playlists no longer accessible to non-allowlisted
-                // apps), fall back to mercury via librespot — same path the
-                // desktop client uses, bypasses the public-API restriction.
+                // Fetch the entire playlist in one browse call. Spotify Web
+                // API returns playlist items in playlist order (oldest-added
+                // first by default). Without the full set, auto-sort can
+                // only reorder the prefix the user happened to load — newest
+                // tracks live near the end of the playlist and would never
+                // surface at the top. 100/page is the endpoint's hard cap.
                 //
-                // Notes:
-                // * `/items` not `/tracks`: episode-containing playlists 403
-                //   on the legacy `/tracks` endpoint.
-                // * Spotify caps `limit` at 100 on `/items`, so loop in
-                //   100-chunks until we fill PAGE_LIMIT or hit the end.
-                // * rspotify's strict deserializer fails on null items and
-                //   podcast-mixed payloads — `raw::get_normalized` patches
-                //   the JSON before typed parse.
+                // Try Web API first. On 403 (Spotify-curated playlists
+                // locked out of public API) or 404 (algorithmic playlists
+                // like Discover Weekly / Release Radar), fall back to
+                // mercury via librespot — same path the desktop client
+                // uses, bypasses the public-API restriction.
+                //
+                // `/items` not `/tracks`: episode-containing playlists 403
+                // on the legacy `/tracks` endpoint. `raw::get_normalized`
+                // patches the JSON before typed parse so rspotify's strict
+                // deserializer accepts null items and podcast-mixed entries.
                 use rspotify::model::{Page, PlaylistItem};
+                const PAGE_SIZE: usize = 100;
                 let id = PlaylistId::from_id_or_uri(uri).context("parse playlist id")?;
                 let path = format!("playlists/{}/items", id.id());
                 let mut out: Vec<Entry> = Vec::new();
                 let mut cursor = offset;
-                let mut more_remaining = false;
                 let mut hit_forbidden = false;
-                while out.len() < PAGE_LIMIT {
-                    let want = (PAGE_LIMIT - out.len()).min(raw::SAFE_LIMIT);
+                tracing::info!(playlist = %uri, offset, "playlist browse: trying Web API path");
+                loop {
                     let res = raw::get_normalized::<Page<PlaylistItem>>(
                         &api,
                         &self.http,
                         &path,
                         &[
-                            ("limit", want.to_string()),
+                            ("limit", PAGE_SIZE.to_string()),
                             ("offset", cursor.to_string()),
                         ],
                     )
                     .await;
                     let page = match res {
                         Ok(p) => p,
-                        // 403: curated playlists locked out of public API.
-                        // 404: algorithmic playlists (Discover Weekly,
-                        // Release Radar) — valid URI from rootlist but
-                        // `/playlists/{id}/items` returns "Resource not
-                        // found" for non-allowlisted dev apps. Mercury
-                        // recovers both.
                         Err(e)
                             if cursor == offset
                                 && (raw::is_forbidden(&e) || raw::is_not_found(&e)) =>
                         {
+                            tracing::warn!(playlist = %uri, err = %e, "playlist browse: Web API forbidden/404 on first page, falling back to mercury");
                             hit_forbidden = true;
                             break;
                         }
-                        Err(e) => return Err(e).context("playlist tracks (normalized)"),
+                        Err(e) => {
+                            tracing::error!(playlist = %uri, cursor, err = %e, "playlist browse: Web API error mid-pagination (NOT falling back to mercury)");
+                            return Err(e).context("playlist tracks (normalized)");
+                        }
                     };
-                    let got = page.items.len();
-                    for item in page.items.into_iter() {
-                        let added_ts = item.added_at.map(|t| t.timestamp());
+                    // Drive pagination solely by `page.next`. `raw::normalize`
+                    // strips null `items` entries (deleted / region-blocked
+                    // tracks); a page can come back with 0 surviving items
+                    // even though Spotify's `next` URL points to more, so
+                    // bailing on `items.is_empty()` would truncate the
+                    // playlist. Advance `cursor` by the request size, not
+                    // the surviving-items count, to keep playlist-position
+                    // alignment.
+                    let no_more = page.next.is_none();
+                    for (idx, item) in page.items.into_iter().enumerate() {
+                        // Web API returns null `added_at` for local files and
+                        // some imported items. Fall back to the playlist
+                        // position so those items still sort newest-first
+                        // (later playlist position = more recently added in
+                        // the default un-reordered case). Real timestamps are
+                        // ~1.7e9; positions are <1e5, so position fallbacks
+                        // sort below dated items rather than mixing.
+                        let pos_fallback = (cursor + idx) as i64;
+                        let added_ts = item
+                            .added_at
+                            .map(|t| t.timestamp())
+                            .unwrap_or(pos_fallback);
                         let track = match item.item {
                             Some(rspotify::model::PlayableItem::Track(t)) => t,
                             _ => continue,
                         };
                         let mut it = track_to_item(&track);
-                        it.display.sort_hint = added_ts;
+                        it.display.sort_hint = Some(added_ts);
                         out.push(Entry {
                             uri: it.uri.clone(),
                             label: format!(
@@ -915,23 +1101,33 @@ impl SpotifySource {
                             display: Some(it.display),
                         });
                     }
-                    cursor += got;
-                    if page.next.is_none() || got == 0 {
-                        break;
-                    }
-                    if out.len() >= PAGE_LIMIT {
-                        more_remaining = true;
+                    cursor += PAGE_SIZE;
+                    if no_more {
                         break;
                     }
                 }
                 if hit_forbidden {
                     // Drop the api lock before mercury (ensure_player relocks).
                     drop(api);
-                    return self.browse_playlist_via_mercury(uri).await;
+                    return self.browse_playlist_via_mercury(uri, offset, base_path).await;
                 }
-                if more_remaining {
-                    out.push(load_more_entry(base_path, cursor));
-                }
+                // Diag: confirm Web API path success + sort_hint quality. If
+                // every hint is identical or zero, RecentlyAdded will only
+                // separate by position fallback — same limitation as mercury.
+                let hints: Vec<i64> = out
+                    .iter()
+                    .filter_map(|e| e.display.as_ref().and_then(|d| d.sort_hint))
+                    .collect();
+                let unique: std::collections::HashSet<i64> = hints.iter().copied().collect();
+                tracing::info!(
+                    playlist = %uri,
+                    entries = out.len(),
+                    with_hint = hints.len(),
+                    unique_hints = unique.len(),
+                    first3 = ?&hints[..hints.len().min(3)],
+                    last3 = ?&hints[hints.len().saturating_sub(3)..],
+                    "playlist browse: Web API path OK"
+                );
                 Ok(out)
             }
             uri if uri.starts_with("spotify:artist:") => {
@@ -1012,7 +1208,8 @@ impl SpotifySource {
                             )),
                             sort_hint,
                             track_no: None,
-                        }),
+                            year_hint: None,
+                                        }),
                     });
                 }
                 if hit_cap {
@@ -1087,7 +1284,8 @@ fn artist_to_item(artist: &rspotify::model::FullArtist) -> Item {
             duration: None,
             sort_hint: None,
             track_no: None,
-        },
+            year_hint: None,
+                        },
     }
 }
 
@@ -1119,8 +1317,135 @@ fn album_to_item(album: &rspotify::model::SimplifiedAlbum) -> Item {
             duration: None,
             sort_hint: None,
             track_no: None,
-        },
+            year_hint: None,
+                        },
     }
+}
+
+/// Hydrate a list of `spotify:track:{base62}` URIs into `Entry`s, with
+/// mercury's dealer (`metadata::hydrate_tracks`) as the primary path and a
+/// single-track Web API fallback (`/v1/tracks/{id}`) for whatever mercury
+/// returns as `(unavailable)`. Returns one slot per input URI, preserving
+/// order; `None` means even the Web API fallback failed (region-blocked or
+/// truly deleted). Free function so background tasks can call it without
+/// borrowing `SpotifySource`.
+async fn hydrate_uris_to_entries(
+    session: &librespot::core::session::Session,
+    api: &Arc<Mutex<AuthCodePkceSpotify>>,
+    http: &reqwest::Client,
+    uris: &[String],
+) -> Vec<Option<Entry>> {
+    let mut tracks = metadata::hydrate_tracks(session, uris).await;
+
+    // Web API single-track fallback for the placeholders mercury leaves
+    // behind. spotatui pattern — `/v1/tracks/{id}` is less strict than
+    // mercury's `/metadata/4/track` and survives the gaps the dealer's
+    // rate limiter creates. Paced at 250ms each via `raw::get_normalized`.
+    let placeholders: Vec<usize> = tracks
+        .iter()
+        .enumerate()
+        .filter_map(|(i, t)| match t {
+            Some(t) if t.name == "(unavailable)" => Some(i),
+            _ => None,
+        })
+        .collect();
+    for i in placeholders {
+        let uri = &uris[i];
+        let Some(base62) = uri.strip_prefix("spotify:track:") else { continue };
+        let path = format!("tracks/{base62}");
+        // Re-acquire the api lock per call instead of holding it across the
+        // whole loop. Holding through N * (pace + network) = many seconds
+        // blocks every other Spotify caller (the foreground browse the
+        // user just clicked, the background hydrate for the previous
+        // playlist, etc). Releasing between calls lets other tasks
+        // interleave; the lock is held only for the duration of one
+        // Web API round-trip.
+        // Per-call timeout: Web API single-track fetch is paced 250ms +
+        // network. A stuck call would block the whole placeholder loop
+        // (each iteration is serial against the api lock), and the user's
+        // "load more" click would never return. 5s is generous for a
+        // single GET that normally lands in <300ms.
+        let res = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            async {
+                let api_g = api.lock().await;
+                raw::get_normalized::<rspotify::model::FullTrack>(
+                    &api_g, http, &path, &[],
+                )
+                .await
+            },
+        )
+        .await;
+        let res = match res {
+            Ok(r) => r,
+            Err(_) => {
+                tracing::warn!(uri = %uri, "web-api track fallback timed out (5s); skipping");
+                continue;
+            }
+        };
+        if let Ok(t) = res {
+            let it = track_to_item(&t);
+            // Parse "YYYY-MM-DD" / "YYYY-MM" / "YYYY" → year. Drives the
+            // `Year` sort axis when this track came in via the Web API
+            // fallback (mercury wrote `year` directly from its parsed
+            // date, but the fallback path needs to re-parse here).
+            let year_from_release = t
+                .album
+                .release_date
+                .as_deref()
+                .and_then(|s| s.get(..4))
+                .and_then(|s| s.parse::<i32>().ok());
+            if let Some(slot) = tracks.get_mut(i) {
+                *slot = Some(metadata::ArtistTrack {
+                    uri: uri.clone(),
+                    name: it.display.title,
+                    artist_name: it.display.artist,
+                    album_name: it.display.album,
+                    art_url: it.display.art_uri,
+                    art_url_full: it.display.art_uri_full,
+                    duration_ms: it
+                        .display
+                        .duration
+                        .map(|d| d.as_millis() as u32)
+                        .unwrap_or(0),
+                    year: year_from_release,
+                });
+            }
+        }
+    }
+
+    tracks
+        .into_iter()
+        .zip(uris.iter())
+        .map(|(maybe, uri)| {
+            // Drop tracks whose name is still "(unavailable)" (both mercury
+            // and Web API failed). Caller treats `None` as "skip the row".
+            let t = maybe?;
+            if t.name == "(unavailable)" {
+                return None;
+            }
+            Some(Entry {
+                uri: uri.clone(),
+                label: format!(
+                    "{} — {}",
+                    t.artist_name.as_deref().unwrap_or(""),
+                    t.name
+                ),
+                kind: EntryKind::Track,
+                display: Some(ItemDisplay {
+                    title: t.name,
+                    artist: t.artist_name,
+                    album: t.album_name,
+                    art_uri: t.art_url,
+                    art_uri_full: t.art_url_full,
+                    duration: Some(std::time::Duration::from_millis(t.duration_ms as u64)),
+                    sort_hint: None,
+                    track_no: None,
+                    year_hint: t.year,
+                }),
+            })
+        })
+        .collect()
 }
 
 fn track_to_item(track: &rspotify::model::FullTrack) -> Item {
@@ -1156,7 +1481,8 @@ fn track_to_item(track: &rspotify::model::FullTrack) -> Item {
             )),
             sort_hint: None,
             track_no: None,
-        },
+            year_hint: None,
+                        },
     }
 }
 
@@ -1185,7 +1511,8 @@ fn playlist_to_item(pl: &rspotify::model::SimplifiedPlaylist) -> Item {
             duration: None,
             sort_hint: None,
             track_no: None,
-        },
+            year_hint: None,
+                        },
     }
 }
 
@@ -1213,7 +1540,8 @@ fn show_to_item(s: &rspotify::model::SimplifiedShow) -> Item {
             duration: None,
             sort_hint: None,
             track_no: None,
-        },
+            year_hint: None,
+                        },
     }
 }
 
@@ -1459,7 +1787,8 @@ impl MusicSource for SpotifySource {
                     duration: None,
                     sort_hint,
                     track_no: None,
-                }),
+                    year_hint: None,
+                                }),
             };
             all.push(entry.clone());
             batch.push(entry);

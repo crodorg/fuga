@@ -22,12 +22,23 @@ use sha2::{Digest, Sha256};
 
 use crate::types::Entry;
 
-const FRESH_TTL: Duration = Duration::from_secs(300);
+/// 1h fresh TTL. Browse views (saved albums, playlists, library trees) are
+/// near-static — bumped from 5min so the user doesn't re-pay the slow
+/// hydration walk on every casual tab-switch. Playlist hydration can run
+/// 20-30s for 500-track playlists when mercury misses force per-track Web
+/// API fallback; the cost is unbearable to repeat every 5min.
+const FRESH_TTL: Duration = Duration::from_secs(3600);
 
 #[derive(Serialize, Deserialize, Clone)]
 struct CachedEntry {
     fetched_at: SystemTime,
     entries: Vec<Entry>,
+    /// Mercury playlist revision (hex) or any opaque snapshot id. Used by
+    /// the playlist-full cache to compare against a freshly-fetched mercury
+    /// revision and either delta-hydrate or short-circuit re-fetch.
+    /// `None` for non-playlist caches that pre-date this field.
+    #[serde(default)]
+    revision: Option<String>,
 }
 
 pub enum CacheHit {
@@ -94,6 +105,7 @@ impl BrowseCache {
         let entry = CachedEntry {
             fetched_at: SystemTime::now(),
             entries,
+            revision: None,
         };
         if let Ok(mut m) = self.mem.lock() {
             m.put(key.to_string(), entry.clone());
@@ -104,6 +116,56 @@ impl BrowseCache {
             tracing::warn!("spotify cache write {}: {e}", path.display());
         }
         Ok(())
+    }
+
+    /// Variant that records an opaque revision string alongside the entries.
+    /// Used by the playlist-full cache; the caller decides freshness by
+    /// comparing the stored revision against a freshly-fetched one.
+    pub async fn put_with_revision(
+        &self,
+        key: &str,
+        entries: Vec<Entry>,
+        revision: Option<String>,
+    ) -> Result<()> {
+        let entry = CachedEntry {
+            fetched_at: SystemTime::now(),
+            entries,
+            revision,
+        };
+        if let Ok(mut m) = self.mem.lock() {
+            m.put(key.to_string(), entry.clone());
+        }
+        let path = self.path_for(key);
+        let bytes = serde_json::to_vec(&entry)?;
+        if let Err(e) = tokio::fs::write(&path, bytes).await {
+            tracing::warn!("spotify cache write {}: {e}", path.display());
+        }
+        Ok(())
+    }
+
+    /// Raw access bypassing the TTL classifier. Returns the stored entries
+    /// and revision regardless of age. Playlist-full callers use this to
+    /// decide freshness from the revision rather than a clock-based TTL.
+    pub async fn get_raw(&self, key: &str) -> Option<(Vec<Entry>, Option<String>)> {
+        if let Some(entry) = self.mem.lock().ok().and_then(|mut m| m.get(key).cloned()) {
+            return Some((entry.entries, entry.revision));
+        }
+        let path = self.path_for(key);
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => match serde_json::from_slice::<CachedEntry>(&bytes) {
+                Ok(entry) => {
+                    if let Ok(mut m) = self.mem.lock() {
+                        m.put(key.to_string(), entry.clone());
+                    }
+                    Some((entry.entries, entry.revision))
+                }
+                Err(e) => {
+                    tracing::debug!("spotify cache_raw decode {key}: {e}");
+                    None
+                }
+            },
+            Err(_) => None,
+        }
     }
 }
 
@@ -138,4 +200,13 @@ pub fn is_cacheable(path: &str) -> bool {
         // small + fast. Skipping cache here means rebuilds + sort changes
         // take effect immediately instead of waiting for the 5 min TTL.
         && !path.starts_with("spotify:artistview:")
+        // Playlist paths own their cache: `browse_playlist_via_mercury`
+        // keeps a permanent revision-keyed full-playlist cache under
+        // `spotify:playlistfull:{id}` and decides freshness from the
+        // mercury revision rather than a clock TTL. Letting the per-page
+        // cache shadow that with stale `?offset=N` snapshots defeats the
+        // whole point — the user would see stale paginated data for up
+        // to FRESH_TTL even after the background hydrate filled the full
+        // cache.
+        && !path.starts_with("spotify:playlist:")
 }
