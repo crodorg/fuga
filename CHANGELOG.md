@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-05-30
+
+### Added
+
+- **Synced lyrics** — press `B` on any playing track to open a dedicated
+  lyrics view in the body pane. Timestamped lyrics scroll with playback,
+  active line centered and highlighted; untimed lyrics render as a static
+  block. Works for every source that carries title + artist + duration
+  (local, Spotify, YouTube, SomaFM, radio). Lyrics come from the free
+  [lrclib.net](https://lrclib.net) API; local files with embedded
+  `SYNCEDLYRICS` / `LYRICS` tags use those instead of the network. `Esc`
+  or `h` closes the view. Fetch is lazy — nothing hits the network until
+  you first open lyrics on a track.
+
 ## [0.2.0] — 2026-05-15
 
 Performance and UX pass. Remote sources stream rows in as each page

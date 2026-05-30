@@ -3,7 +3,7 @@ use std::time::Duration;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs, Wrap};
 use ratatui::Frame;
 use image::imageops::FilterType;
 use ratatui_image::{Resize, StatefulImage};
@@ -97,10 +97,14 @@ pub fn render(app: &mut App, f: &mut Frame<'_>) {
     let art_top_y: Option<u16> = art_dims.map(|(_, h)| area.bottom().saturating_sub(h));
 
     app.body_rect = Some(body_area);
-    match app.active_category() {
-        Category::Queue => render_queue(app, f, body_area, art_top_y),
-        Category::Search => render_search(app, f, body_area),
-        _ => render_browse(app, f, body_area, art_top_y),
+    if app.lyrics_visible {
+        render_lyrics(app, f, body_area);
+    } else {
+        match app.active_category() {
+            Category::Queue => render_queue(app, f, body_area, art_top_y),
+            Category::Search => render_search(app, f, body_area),
+            _ => render_browse(app, f, body_area, art_top_y),
+        }
     }
     app.volume_rect = None;
     render_bottom_bar(app, f, bottom_area);
@@ -1470,6 +1474,102 @@ fn fmt_mmss(d: Duration) -> String {
 
 /// Modal help overlay: every binding in the active keymap, plus leader chords.
 /// Press `?`, `q`, or `Esc` to close. Centered, themed, dim border.
+/// Dedicated lyrics view: takes over the body area while `lyrics_visible`.
+/// Synced lyrics center the active line (advanced against playback position)
+/// and highlight it; plain lyrics render as a static centered block. Ported
+/// from spotatui `player.rs::draw_lyrics`.
+fn render_lyrics(app: &App, f: &mut Frame<'_>, area: Rect) {
+    use crate::lyrics::LyricsStatus;
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Lyrics ")
+        .border_style(app.theme.dim());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    // Centered single-line message for the non-rendered states.
+    let message = |f: &mut Frame<'_>, msg: &str| {
+        let p = Paragraph::new(msg)
+            .style(app.theme.dim())
+            .alignment(Alignment::Center);
+        let r = Rect {
+            x: inner.x,
+            y: inner.y + inner.height / 2,
+            width: inner.width,
+            height: 1,
+        };
+        f.render_widget(p, r);
+    };
+
+    let Some(lyr) = app.lyrics.as_ref() else {
+        message(f, "No track playing.");
+        return;
+    };
+
+    match lyr.status {
+        LyricsStatus::Loading => message(f, "Loading lyrics..."),
+        LyricsStatus::NotFound => message(f, "No lyrics found for this track."),
+        LyricsStatus::Plain => {
+            // Nothing to sync against — render the whole block centered, wrapped.
+            let lines: Vec<Line<'static>> = lyr
+                .lines
+                .iter()
+                .map(|(_, t)| Line::from(Span::styled(t.clone(), app.theme.fg())))
+                .collect();
+            let p = Paragraph::new(lines)
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false });
+            f.render_widget(p, inner);
+        }
+        LyricsStatus::Synced => {
+            // Last line whose timestamp has passed is the active one.
+            let cur_ms = app
+                .playback
+                .as_ref()
+                .map(|p| p.elapsed.as_millis())
+                .unwrap_or(0);
+            let mut active = 0usize;
+            for (i, (t, _)) in lyr.lines.iter().enumerate() {
+                if *t <= cur_ms {
+                    active = i;
+                } else {
+                    break;
+                }
+            }
+
+            // Anchor the active line to the vertical center, rendering the
+            // window of lines around it row by row.
+            let mid = (inner.height / 2) as i32;
+            for row in 0..inner.height as i32 {
+                let idx = active as i32 + row - mid;
+                if idx < 0 || idx as usize >= lyr.lines.len() {
+                    continue;
+                }
+                let (_, text) = &lyr.lines[idx as usize];
+                let style = if idx as usize == active {
+                    app.theme.accent().add_modifier(Modifier::BOLD)
+                } else {
+                    app.theme.dim()
+                };
+                let p = Paragraph::new(text.clone())
+                    .style(style)
+                    .alignment(Alignment::Center);
+                let r = Rect {
+                    x: inner.x,
+                    y: inner.y + row as u16,
+                    width: inner.width,
+                    height: 1,
+                };
+                f.render_widget(p, r);
+            }
+        }
+    }
+}
+
 fn render_help(app: &App, f: &mut Frame<'_>, area: Rect) {
     use crate::keys::Action;
 
@@ -1714,6 +1814,7 @@ fn action_label(a: &crate::keys::Action) -> Option<&'static str> {
         Action::FocusSearch => "search",
         Action::FocusCommand => "command bar",
         Action::ToggleHelp => "toggle help",
+        Action::ToggleLyrics => "toggle lyrics",
         Action::ToggleLike => "toggle like",
         Action::OpenDevicePicker => "Spotify devices",
         Action::TransferToSelectedDevice => return None,

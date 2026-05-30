@@ -6,6 +6,7 @@ mod dispatch;
 mod hooks;
 mod ipc;
 mod keys;
+mod lyrics;
 #[cfg(target_os = "macos")]
 mod macos;
 mod mpris;

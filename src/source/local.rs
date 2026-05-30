@@ -355,6 +355,36 @@ impl MusicSource for LocalSource {
         );
         Err(anyhow::anyhow!("no album art for {uri}"))
     }
+
+    async fn embedded_lyrics(&self, uri: &str) -> Result<Option<String>> {
+        use mpd_client::protocol::command::Command as RawCommand;
+        let mut cmd = RawCommand::new("readcomments");
+        cmd.add_argument(uri)
+            .map_err(|e| anyhow::anyhow!("readcomments arg: {e:?}"))?;
+        let frame = match self.client.raw_command(cmd).await {
+            Ok(f) => f,
+            Err(e) => {
+                // Not fatal — caller falls back to lrclib.
+                tracing::debug!("readcomments {uri}: {e:?}");
+                return Ok(None);
+            }
+        };
+        // Lyrics live under varied comment keys; prefer synced. Some taggers
+        // split the lyric across one comment per line, so accumulate same-key
+        // values rather than taking the first. Keys come back verbatim — match
+        // case-insensitively.
+        let mut synced: Vec<String> = Vec::new();
+        let mut plain: Vec<String> = Vec::new();
+        for (k, v) in frame.fields() {
+            match k.to_ascii_lowercase().as_str() {
+                "syncedlyrics" => synced.push(v.to_string()),
+                "lyrics" | "unsyncedlyrics" | "uslt" => plain.push(v.to_string()),
+                _ => {}
+            }
+        }
+        let blob = if synced.is_empty() { plain } else { synced }.join("\n");
+        Ok((!blob.trim().is_empty()).then_some(blob))
+    }
 }
 
 impl LocalSource {
@@ -493,7 +523,7 @@ impl LocalSource {
                     });
                     cur_is_file = false;
                 }
-                "Title" | "Artist" | "Album" if cur_is_file => {
+                "Title" | "Artist" | "Album" | "duration" | "Time" if cur_is_file => {
                     if let Some(last) = out.last_mut() {
                         if let Some(d) = last.display.as_mut() {
                             match k {
@@ -510,6 +540,21 @@ impl LocalSource {
                                     last.label = format!("{} — {}", v, d.title);
                                 }
                                 "Album" => d.album = Some(v.to_string()),
+                                // `duration` (fractional seconds) is preferred;
+                                // `Time` (integer seconds) is the fallback when
+                                // it's absent. Without this, dir-browsed tracks
+                                // carried no duration and lrclib lyrics lookups
+                                // (which match on it) silently failed.
+                                "duration" => {
+                                    if let Ok(secs) = v.parse::<f64>() {
+                                        d.duration = Some(std::time::Duration::from_secs_f64(secs));
+                                    }
+                                }
+                                "Time" if d.duration.is_none() => {
+                                    if let Ok(secs) = v.parse::<u64>() {
+                                        d.duration = Some(std::time::Duration::from_secs(secs));
+                                    }
+                                }
                                 _ => {}
                             }
                         }

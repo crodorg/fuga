@@ -127,6 +127,14 @@ pub trait MusicSource: Send + Sync {
     ) -> Result<std::path::PathBuf> {
         Err(anyhow::anyhow!("download not supported"))
     }
+
+    /// Embedded lyrics carried in the track's own metadata, if any (raw blob,
+    /// LRC-timestamped or plain). Only local files realistically have these;
+    /// the lyrics layer prefers them over the lrclib network lookup. Default:
+    /// none.
+    async fn embedded_lyrics(&self, _uri: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 /// Routes art fetches to the source that owns the URI's scheme.

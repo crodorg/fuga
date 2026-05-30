@@ -230,6 +230,13 @@ pub struct App {
     /// to the source aspect (no whitespace letterbox for non-square art).
     pub now_playing_aspect: Option<(u32, u32)>,
 
+    /// Whether the dedicated lyrics view is taking over the body area.
+    /// Toggled by `Action::ToggleLyrics` (default `B`).
+    pub lyrics_visible: bool,
+    /// Lyrics for the currently-playing track, fetched lazily from lrclib the
+    /// first time the view is opened (and on track change while it stays open).
+    pub lyrics: Option<crate::lyrics::TrackLyrics>,
+
     pub playback: Option<crate::types::PlaybackStatus>,
     pub master_volume: u8,
     /// Last volume-step instant. OS autorepeat blasts many Press events when
@@ -374,6 +381,9 @@ pub struct App {
     /// messages still go through `set_status` (which timestamps for
     /// auto-clear). `None` means no pending toast.
     pub toast_inbox: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// Delivery slot for a background lyrics fetch, mirroring `toast_inbox`.
+    /// The wake handler drains it into `lyrics` (guarded by track uri).
+    pub lyrics_inbox: std::sync::Arc<std::sync::Mutex<Option<crate::lyrics::TrackLyrics>>>,
 
     pub shutdown: CancellationToken,
 
@@ -470,6 +480,8 @@ impl App {
             now_playing_protocol: None,
             now_playing_uri: None,
             now_playing_aspect: None,
+            lyrics_visible: false,
+            lyrics: None,
             playback: None,
             master_volume: 80,
             last_volume_at: None,
@@ -526,6 +538,7 @@ impl App {
             next_rect: None,
             download_progress: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(255)),
             toast_inbox: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            lyrics_inbox: std::sync::Arc::new(std::sync::Mutex::new(None)),
             shutdown: CancellationToken::new(),
             mpris_cmd_tx: None,
             mpris_last_uri: None,
@@ -1113,6 +1126,24 @@ impl App {
                 self.help_visible = !self.help_visible;
                 self.dirty = true;
             }
+            Action::ToggleLyrics => {
+                self.lyrics_visible = !self.lyrics_visible;
+                // Lazily fetch on open when the loaded lyrics don't match the
+                // playing track (or none are loaded yet).
+                if self.lyrics_visible {
+                    let stale = match (&self.lyrics, &self.now_playing_uri) {
+                        (Some(l), Some(u)) => &l.uri != u,
+                        (None, Some(_)) => true,
+                        _ => false,
+                    };
+                    if stale {
+                        if let Some(cur) = self.queue.current().cloned() {
+                            self.spawn_lyrics_fetch(&cur);
+                        }
+                    }
+                }
+                self.dirty = true;
+            }
             Action::ToggleLike => self.toggle_like().await,
             Action::OpenDevicePicker => self.open_device_picker().await,
             Action::TransferToSelectedDevice => self.transfer_to_selected_device().await,
@@ -1321,6 +1352,12 @@ impl App {
     }
 
     fn back(&mut self) {
+        // Lyrics view is a full-body overlay; Esc / h closes it first.
+        if self.lyrics_visible {
+            self.lyrics_visible = false;
+            self.dirty = true;
+            return;
+        }
         let cat = self.active_category();
         // Esc on a committed-filter view should clear the filter first,
         // not pop the stack — otherwise a user who hits Enter to commit a
@@ -2720,6 +2757,66 @@ impl App {
         }
     }
 
+    /// Drain a background lyrics fetch into `self.lyrics`, but only when it
+    /// still matches the playing track — the user may have skipped on while the
+    /// request was in flight. Called on each wake.
+    pub fn drain_lyrics_inbox(&mut self) {
+        let got = {
+            let mut g = match self.lyrics_inbox.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            g.take()
+        };
+        if let Some(lyr) = got {
+            if self.now_playing_uri.as_deref() == Some(lyr.uri.as_str()) {
+                self.lyrics = Some(lyr);
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// Kick a background lyrics fetch for `cur`, mirroring the YouTube download
+    /// task: set `Loading` synchronously, then deliver via `lyrics_inbox` +
+    /// `wake_tx`. lrclib matches on duration, so a track without one resolves
+    /// straight to `NotFound`.
+    fn spawn_lyrics_fetch(&mut self, cur: &crate::queue::QueuedItem) {
+        let uri = cur.uri.clone();
+        let scheme = cur.source_scheme;
+        let title = cur.display.title.clone();
+        let artist = cur.display.artist.clone().unwrap_or_default();
+        // lrclib matches on duration; fall back to the live playback duration
+        // when the browse path didn't carry one (MPD directory listings don't).
+        let duration = cur
+            .display
+            .duration
+            .or_else(|| self.playback.as_ref().and_then(|p| p.duration));
+        tracing::debug!(scheme, %title, %artist, ?duration, "lyrics fetch");
+        self.lyrics = Some(crate::lyrics::TrackLyrics::loading(uri.clone()));
+        self.dirty = true;
+        let src = self.dispatcher.get(scheme).cloned();
+        let inbox = self.lyrics_inbox.clone();
+        let wake = self.wake_tx.clone();
+        tokio::spawn(async move {
+            // Embedded lyrics (local files) win over the network lookup.
+            let embedded = match &src {
+                Some(s) => s.embedded_lyrics(&uri).await.ok().flatten(),
+                None => None,
+            };
+            let res = if let Some(blob) = embedded {
+                crate::lyrics::from_text(uri, &blob)
+            } else if let Some(d) = duration {
+                crate::lyrics::fetch(uri, &title, &artist, d).await
+            } else {
+                crate::lyrics::TrackLyrics::not_found(uri)
+            };
+            if let Ok(mut g) = inbox.lock() {
+                *g = Some(res);
+            }
+            let _ = wake.send(());
+        });
+    }
+
     /// Remove the hovered Spotify track from the playlist currently being
     /// viewed. Looks up the playlist URI via `current_descend_uri`. On
     /// success, refreshes the view so the row disappears.
@@ -3338,6 +3435,11 @@ impl App {
         // persists across runs, and users on small terminals want it to
         // stay collapsed.
         self.now_playing_uri = Some(cur.uri.clone());
+        // Refresh lyrics for the new track only while the view is open, so
+        // users who never open it don't generate lrclib traffic on every skip.
+        if self.lyrics_visible {
+            self.spawn_lyrics_fetch(&cur);
+        }
         // Probe liked status in the background — Spotify has the only real impl.
         self.refresh_liked().await;
         crate::hooks::on_track_change(&self.hooks, &cur);
@@ -4230,6 +4332,7 @@ async fn run_loop(
             _ = wake_rx.recv() => {
                 while wake_rx.try_recv().is_ok() {}
                 app.drain_toast_inbox();
+                app.drain_lyrics_inbox();
                 app.dirty = true;
             }
             batch = row_batch_rx.recv() => {

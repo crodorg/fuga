@@ -347,6 +347,7 @@ fn default_global() -> &'static [(&'static str, &'static str)] {
         ("vol_up", "+"),
         ("vol_down", "-"),
         ("toggle_help", "?"),
+        ("toggle_lyrics", "B"),
         ("toggle_like", "F"),
         ("open_devices", "d"),
         ("toggle_shuffle", "z"),

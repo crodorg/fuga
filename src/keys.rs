@@ -38,6 +38,9 @@ pub enum Action {
     FocusSearch,
     FocusCommand,
     ToggleHelp,
+    /// Toggle the dedicated synced-lyrics view over the body area. `B` by
+    /// default. Lyrics come from lrclib for any source with track metadata.
+    ToggleLyrics,
     ToggleLike,
     OpenDevicePicker,
     TransferToSelectedDevice,
@@ -289,6 +292,7 @@ pub fn parse_action(s: &str) -> Option<Action> {
         "focus_search" => Action::FocusSearch,
         "focus_command" => Action::FocusCommand,
         "toggle_help" => Action::ToggleHelp,
+        "toggle_lyrics" => Action::ToggleLyrics,
         "toggle_like" => Action::ToggleLike,
         "open_devices" => Action::OpenDevicePicker,
         "toggle_shuffle" => Action::ToggleShuffle,
