@@ -304,13 +304,13 @@ pub fn normalize(v: &mut Value) {
             if let Some(Value::Object(owner)) = map.get_mut("owner") {
                 let needs_string = |v: &Value| !v.is_string();
                 let needs_object = |v: &Value| !v.is_object();
-                if owner.get("id").map_or(true, needs_string) {
+                if owner.get("id").is_none_or(needs_string) {
                     owner.insert("id".into(), json!(""));
                 }
-                if owner.get("href").map_or(true, needs_string) {
+                if owner.get("href").is_none_or(needs_string) {
                     owner.insert("href".into(), json!(""));
                 }
-                if owner.get("external_urls").map_or(true, needs_object) {
+                if owner.get("external_urls").is_none_or(needs_object) {
                     owner.insert("external_urls".into(), json!({}));
                 }
             }

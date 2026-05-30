@@ -4204,6 +4204,7 @@ pub async fn run(
     std::process::exit(0);
 }
 
+#[allow(clippy::too_many_arguments)] // event-loop wiring: each channel is distinct
 async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
@@ -4441,9 +4442,7 @@ pub fn web_url_for_uri(uri: &str) -> Option<String> {
     if let Some(rest) = uri.strip_prefix("spotify:") {
         // Strip the leading kind segment from URIs like "spotify:track:abc"
         // and reassemble the path. Reject malformed inputs.
-        let mut parts = rest.splitn(2, ':');
-        let kind = parts.next()?;
-        let id = parts.next()?;
+        let (kind, id) = rest.split_once(':')?;
         if id.is_empty() {
             return None;
         }

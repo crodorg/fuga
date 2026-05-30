@@ -250,7 +250,7 @@ impl SpotifySource {
             // meaningful, else playlist position. Sorting before pagination
             // is what makes page 1 the newest adds rather than the
             // playlist's oldest-added prefix.
-            uris.sort_by(|a, b| b.1.cmp(&a.1));
+            uris.sort_by_key(|b| std::cmp::Reverse(b.1));
             (session, uris, revision)
         };
         let total = sorted_uris.len();
@@ -1799,14 +1799,13 @@ impl MusicSource for SpotifySource {
             };
             all.push(entry.clone());
             batch.push(entry);
-            if batch.len() >= BATCH {
-                if tx
+            if batch.len() >= BATCH
+                && tx
                     .send(Ok(std::mem::take(&mut batch)))
                     .await
                     .is_err()
-                {
-                    return;
-                }
+            {
+                return;
             }
         }
         if all.len() == PAGE_LIMIT {
