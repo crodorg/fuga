@@ -56,6 +56,10 @@ pub struct SpotifyPlayer {
     pub position: Arc<Mutex<PositionAnchor>>,
     pub duration_ms: Arc<Mutex<Option<u32>>>,
     pub state: Arc<Mutex<PlayState>>,
+    /// The most recently loaded playable (kind + base62 id). Lets the source
+    /// reload the same track after rebuilding a dead session (idle keepalive
+    /// timeout) so a paused track resumes where it left off.
+    pub current: std::sync::Mutex<Option<(PlayableKind, String)>>,
     pub session: Session,
     /// Spotify Connect handle. Holding this advertises fuga as a Connect
     /// device on the user's account; phones/desktops see it in their device
@@ -207,6 +211,7 @@ impl SpotifyPlayer {
             position,
             duration_ms,
             state,
+            current: std::sync::Mutex::new(None),
             session,
             spirc: Some(spirc),
             _events_task: events_task,
@@ -215,17 +220,33 @@ impl SpotifyPlayer {
     }
 
     pub fn load_track(&self, base62_id: &str) -> Result<()> {
-        let id = SpotifyId::from_base62(base62_id)
-            .map_err(|e| anyhow!("parse spotify id `{base62_id}`: {e}"))?;
-        self.player.load(SpotifyUri::Track { id }, true, 0);
-        Ok(())
+        self.load_at(PlayableKind::Track, base62_id, 0)
     }
 
     pub fn load_episode(&self, base62_id: &str) -> Result<()> {
+        self.load_at(PlayableKind::Episode, base62_id, 0)
+    }
+
+    /// Load a playable at a specific position and start playing. Records it as
+    /// the current playable so a later session rebuild can resume the same
+    /// track. `position_ms == 0` is the normal start-from-top case.
+    pub fn load_at(&self, kind: PlayableKind, base62_id: &str, position_ms: u32) -> Result<()> {
         let id = SpotifyId::from_base62(base62_id)
             .map_err(|e| anyhow!("parse spotify id `{base62_id}`: {e}"))?;
-        self.player.load(SpotifyUri::Episode { id }, true, 0);
+        let uri = match kind {
+            PlayableKind::Track => SpotifyUri::Track { id },
+            PlayableKind::Episode => SpotifyUri::Episode { id },
+        };
+        self.player.load(uri, true, position_ms);
+        if let Ok(mut g) = self.current.lock() {
+            *g = Some((kind, base62_id.to_string()));
+        }
         Ok(())
+    }
+
+    /// The playable currently loaded, if any.
+    pub fn current(&self) -> Option<(PlayableKind, String)> {
+        self.current.lock().ok().and_then(|g| g.clone())
     }
 
     pub fn pause(&self) {

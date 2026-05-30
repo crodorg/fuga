@@ -68,10 +68,17 @@ impl SpotifySource {
     async fn ensure_player(&self) -> Result<()> {
         {
             let g = self.player.lock().await;
-            if g.is_some() {
-                return Ok(());
+            if let Some(p) = g.as_ref() {
+                if !p.session.is_invalid() {
+                    return Ok(());
+                }
+                // librespot's idle keepalive marked the session invalid (it
+                // can't be reused). Fall through to drop and rebuild.
+                tracing::info!("spotify session invalid; rebuilding player");
             }
         }
+        // Drop any dead player before building a fresh one.
+        *self.player.lock().await = None;
         // Need a fresh access token from rspotify.
         let access_token = {
             let api = self.api.lock().await;
@@ -1855,6 +1862,35 @@ impl MusicSource for SpotifySource {
     }
 
     async fn resume(&self) -> Result<()> {
+        // If the session died while paused (librespot idle keepalive timeout),
+        // calling player.play() on it silently no-ops — this is the "won't
+        // resume after a long pause" bug. A librespot Session can't be reused
+        // once invalid, so rebuild the player and reload the same track at the
+        // position it was paused at.
+        let dead = {
+            let g = self.player.lock().await;
+            g.as_ref().map(|p| p.session.is_invalid()).unwrap_or(false)
+        };
+        if dead {
+            // Capture what was playing and where, from the dead player.
+            let resume_at = {
+                let g = self.player.lock().await;
+                match g.as_ref() {
+                    Some(p) => {
+                        let pos_ms = p.playback_status().await.elapsed.as_millis().min(u32::MAX as u128) as u32;
+                        p.current().map(|(kind, id)| (kind, id, pos_ms))
+                    }
+                    None => None,
+                }
+            };
+            self.ensure_player().await?; // rebuilds: session was invalid
+            if let Some((kind, id, pos_ms)) = resume_at {
+                let g = self.player.lock().await;
+                let p = g.as_ref().ok_or_else(|| anyhow!("player gone after rebuild"))?;
+                p.load_at(kind, &id, pos_ms)?;
+            }
+            return Ok(());
+        }
         if let Some(p) = self.player.lock().await.as_ref() {
             p.resume();
         }

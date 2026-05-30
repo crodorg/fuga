@@ -4192,7 +4192,16 @@ pub async fn run(
     .ok();
     terminal.show_cursor().ok();
 
-    res
+    // librespot's Player::Drop blocks on a thread-join inside its own nested
+    // runtime, and several background tasks (the IPC accept loop, the MPRIS
+    // thread, librespot's session/spirc) are never aborted. Letting `app` drop
+    // here stalls the future, so the process never exits and the shell hangs
+    // until Ctrl-C. App state is persisted eagerly (no Drop work to lose), so
+    // exit directly and let the OS reclaim the audio/session threads.
+    if let Err(e) = &res {
+        tracing::error!("run loop: {e:#}");
+    }
+    std::process::exit(0);
 }
 
 async fn run_loop(
