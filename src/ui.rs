@@ -271,6 +271,15 @@ fn render_expanded_art(app: &mut App, f: &mut Frame<'_>, area: Rect) {
         }
     }
 
+    // Draw nothing until the full-size image is decoded and cached. The fetch
+    // is kicked in `expand_hovered_art`; until it lands, drawing would pop the
+    // border up at the 60% budget rect and then snap to the image's true size
+    // once it loads. The overlay sizes itself to the image, so it can only be
+    // drawn once the image exists.
+    if app.art_cache.peek(&uri).is_none() {
+        return;
+    }
+
     // Budget rect: 60% of terminal. Then ask ratatui-image's own resize
     // pipeline what cells the Fit-scaled image will actually paint. That
     // way the border wraps the painted image flush — no rounding-induced
