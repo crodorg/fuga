@@ -120,6 +120,9 @@ impl Theme {
         self.accent = accent;
         self.selection_bg = sel_bg;
         self.selection_fg = sel_fg;
+        // Playback progress bar tracks the active source too (green Spotify,
+        // red YouTube, …) instead of staying a fixed green across all modes.
+        self.progress = accent;
         self
     }
 }
