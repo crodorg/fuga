@@ -76,7 +76,11 @@ impl Theme {
             .add_modifier(Modifier::BOLD)
     }
     pub fn dim(&self) -> Style {
-        Style::default().fg(self.dim).add_modifier(Modifier::DIM)
+        // Color alone carries the "secondary" weight. The DIM intensity
+        // modifier used to compound with a dark color and render the text
+        // unreadable on dark terminals, so it's gone — tune via the `dim`
+        // color token instead.
+        Style::default().fg(self.dim)
     }
     pub fn header(&self) -> Style {
         Style::default().fg(self.header).add_modifier(Modifier::BOLD)
@@ -137,7 +141,7 @@ fn default_dark() -> Theme {
         accent: Color::Cyan,
         selection_fg: Color::Black,
         selection_bg: Color::Cyan,
-        dim: Color::DarkGray,
+        dim: Color::Gray,
         header: Color::Yellow,
         progress: Color::Green,
         progress_track: Color::DarkGray,
