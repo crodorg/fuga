@@ -2,8 +2,9 @@
 //!
 //! LRC fetch + timestamp parsing adapted from LargeModGames/spotatui (MIT).
 //! lrclib needs only track title, artist, and duration — there is no Spotify
-//! coupling — so this works for every fuga source whose `ItemDisplay` carries
-//! those fields (local, Spotify, YouTube, SomaFM, radio).
+//! coupling — so this works for any fuga source whose `ItemDisplay` carries
+//! those fields: local, Spotify, and YouTube. Live radio and SomaFM streams
+//! have no fixed track duration, so lrclib can't match them.
 
 use std::sync::OnceLock;
 use std::time::Duration;

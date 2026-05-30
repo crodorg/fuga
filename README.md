@@ -22,6 +22,9 @@ terminal.
   a halfblocks fallback for non-Kitty terminals)
 - Five sources, one unified queue: local files (MPD), Spotify, YouTube,
   SomaFM, and user-defined internet radio
+- Synced lyrics pane (`B`) — timestamped lyrics scroll with playback for
+  local, Spotify, and YouTube tracks via the free lrclib.net API; local
+  files with embedded lyric tags use those instead of the network
 - Vim-style keybinds, mouse support, MPRIS bridge, lifecycle hooks, and a
   unix-socket IPC control plane (`fuga play <uri>`, `fuga next`, …)
 - Source-plugin trait — adding a new backend is one file implementing
@@ -38,10 +41,11 @@ terminal.
 
 ## Status
 
-v0.2.0 — Local, radio, SomaFM, Spotify, and YouTube all work end-to-end
-(browse, play, queue, search, control). Remote sources stream rows into
-the view as each page arrives. macOS media keys + Now Playing widget
-are wired through `MPRemoteCommandCenter`. See
+v0.2.1 — Local, radio, SomaFM, Spotify, and YouTube all work end-to-end
+(browse, play, queue, search, control). Synced lyrics (`B`) for local,
+Spotify, and YouTube tracks. Remote sources stream rows into the view as
+each page arrives. macOS media keys + Now Playing widget are wired
+through `MPRemoteCommandCenter`. See
 [CHANGELOG.md](CHANGELOG.md) for the full list.
 
 ## Requirements
@@ -195,6 +199,7 @@ PulseAudio or PipeWire (both expose a `pulse` device that mixes for you).
 | `m`                  | Open contextual action menu                    |
 | `P`                  | Pin / unpin hovered item                       |
 | `v`                  | Expand hovered album art                       |
+| `B`                  | Toggle synced-lyrics view                      |
 | `Y`                  | Download hovered track (YouTube)               |
 
 Plus leader chords: `g g` (top) and `g {l,s,r,f,y}` to jump to Local /

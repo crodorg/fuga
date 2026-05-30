@@ -12,8 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Synced lyrics** — press `B` on any playing track to open a dedicated
   lyrics view in the body pane. Timestamped lyrics scroll with playback,
   active line centered and highlighted; untimed lyrics render as a static
-  block. Works for every source that carries title + artist + duration
-  (local, Spotify, YouTube, SomaFM, radio). Lyrics come from the free
+  block. Works for local, Spotify, and YouTube tracks — any source whose
+  rows carry a track title, artist, and fixed duration (live radio and
+  SomaFM streams have no track duration, so lrclib can't match them).
+  Lyrics come from the free
   [lrclib.net](https://lrclib.net) API; local files with embedded
   `SYNCEDLYRICS` / `LYRICS` tags use those instead of the network. `Esc`
   or `h` closes the view. Fetch is lazy — nothing hits the network until
