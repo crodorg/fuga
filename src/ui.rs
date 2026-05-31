@@ -848,13 +848,14 @@ fn render_search(app: &mut App, f: &mut Frame<'_>, area: Rect) {
 }
 
 fn render_bottom_bar(app: &mut App, f: &mut Frame<'_>, area: Rect) {
-    // Tint border + accent by the *playing* track's source, not the active
-    // browse mode — so the now-playing block stays visually tied to what's
-    // playing while the user browses a different source.
-    let (playing_border, playing_accent) = {
-        let pt = app.playing_theme();
-        (pt.block_border(), pt.accent())
-    };
+    // Tint the WHOLE now-playing block — border, accent, volume, shuffle,
+    // repeat, progress bar — by the *playing* track's source, not the active
+    // browse mode. So while you browse YouTube with Spotify playing, the
+    // entire bottom row stays green. Cloned to an owned Theme so it doesn't
+    // borrow `app` across the rect mutations below.
+    let pt = app.playing_theme().into_owned();
+    let playing_border = pt.block_border();
+    let playing_accent = pt.accent();
 
     // No title — state moved next to volume. Title slot otherwise left a
     // single-cell gap in the top border where the play/pause glyph used
@@ -868,7 +869,7 @@ fn render_bottom_bar(app: &mut App, f: &mut Frame<'_>, area: Rect) {
     if inner.height < 4 {
         // Tiny terminal — fall back to single line of progress so the bar
         // still tells the user "what + how far". Skip the right-column meta.
-        app.progress_bar_rect = render_progress_row(app, f, inner);
+        app.progress_bar_rect = render_progress_row(app, f, inner, &pt);
         app.volume_rect = None;
         return;
     }
@@ -931,7 +932,7 @@ fn render_bottom_bar(app: &mut App, f: &mut Frame<'_>, area: Rect) {
         Span::raw("  "),
         Span::styled(">>", playing_accent),
         Span::raw("  "),
-        Span::styled(vol_str, app.theme.volume()),
+        Span::styled(vol_str, pt.volume()),
     ]);
     render_text_with_right(f, rows[0], &title, playing_accent, row0_right);
 
@@ -968,7 +969,7 @@ fn render_bottom_bar(app: &mut App, f: &mut Frame<'_>, area: Rect) {
         row1_spans.push(badge);
         row1_spans.push(Span::raw("  "));
     }
-    row1_spans.extend(shuf_rep_spans(app));
+    row1_spans.extend(shuf_rep_spans(app, &pt));
     render_text_with_right(f, rows[1], &artist, app.theme.fg(), Line::from(row1_spans));
 
     // Row 2: album (dim) | SPT · OGG · 320 kbps. Source abbreviated so the
@@ -978,7 +979,7 @@ fn render_bottom_bar(app: &mut App, f: &mut Frame<'_>, area: Rect) {
     render_text_with_right(f, rows[2], &album, app.theme.dim(), source_meta);
 
     // Row 3: progress bar — full width.
-    app.progress_bar_rect = render_progress_row(app, f, rows[3]);
+    app.progress_bar_rect = render_progress_row(app, f, rows[3], &pt);
 
     // Bounding rect for the three text rows (title / artist / album).
     // Mouse handler maps left/middle/right clicks here to prev / play-pause
@@ -996,13 +997,18 @@ fn render_bottom_bar(app: &mut App, f: &mut Frame<'_>, area: Rect) {
 /// Render the progress bar (and elapsed/total labels) in a single row,
 /// returning the inner clickable rect of the bar (None if the row is too
 /// narrow). Reused by both the 4-row and degraded layouts.
-fn render_progress_row(app: &App, f: &mut Frame<'_>, area: Rect) -> Option<Rect> {
+fn render_progress_row(
+    app: &App,
+    f: &mut Frame<'_>,
+    area: Rect,
+    theme: &Theme,
+) -> Option<Rect> {
     let (elapsed, duration) = app
         .playback
         .as_ref()
         .map(|p| (p.elapsed, p.duration))
         .unwrap_or((Duration::ZERO, None));
-    let bar = build_progress_bar(elapsed, duration, area.width as usize, &app.theme);
+    let bar = build_progress_bar(elapsed, duration, area.width as usize, theme);
     f.render_widget(Paragraph::new(bar), area);
     duration.and_then(|d| {
         let elapsed_w = fmt_mmss(elapsed).chars().count() as u16;
@@ -1015,20 +1021,20 @@ fn render_progress_row(app: &App, f: &mut Frame<'_>, area: Rect) -> Option<Rect>
 /// Build the shuffle + repeat span pair. Active states use the accent
 /// theme; inactive use dim. Identical to the prior bottom-meter rendering
 /// so the styling stays consistent after the layout shift.
-fn shuf_rep_spans(app: &App) -> Vec<Span<'static>> {
+fn shuf_rep_spans(app: &App, theme: &Theme) -> Vec<Span<'static>> {
     let shuf_style = if app.shuffle {
-        app.theme.accent()
+        theme.accent()
     } else {
-        app.theme.dim()
+        theme.dim()
     };
     let rep_label = match app.repeat {
         crate::queue::RepeatMode::Off | crate::queue::RepeatMode::All => "REP",
         crate::queue::RepeatMode::Track => "REP\u{00b7}1",
     };
     let rep_style = if matches!(app.repeat, crate::queue::RepeatMode::Off) {
-        app.theme.dim()
+        theme.dim()
     } else {
-        app.theme.accent()
+        theme.accent()
     };
     vec![
         Span::styled("SHUF", shuf_style),
