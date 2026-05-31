@@ -491,6 +491,14 @@ impl LocalSource {
                     });
                     cur_is_file = false;
                 }
+                "file" if dir.is_empty() => {
+                    // Root of the Directories tab is a folder browser: hide
+                    // loose top-level files (download dumps land here as
+                    // "Artist - Title.mp3" and bury the artist folders). They
+                    // stay reachable via Albums / Search. Files inside any
+                    // subdirectory still list normally.
+                    cur_is_file = false;
+                }
                 "file" => {
                     let leaf = leaf_name(v);
                     out.push(Entry {
@@ -639,6 +647,27 @@ impl LocalSource {
             .command(commands::Find::new(filter))
             .await
             .context("MPD find album")?;
-        Ok(songs.iter().map(Self::song_to_item).collect())
+        // Dedupe by (artist, title). Some libraries hold the same track under
+        // two distinct file paths — e.g. an organized copy in the album folder
+        // plus a loose "Artist - Title.mp3" dumped at the music_directory root.
+        // Both are separate MPD URIs, so a tag `find` returns each track twice;
+        // the album view should still show it once. First occurrence wins.
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for s in songs.iter() {
+            let item = Self::song_to_item(s);
+            let key = (
+                item.display
+                    .artist
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_lowercase(),
+                item.display.title.to_lowercase(),
+            );
+            if seen.insert(key) {
+                out.push(item);
+            }
+        }
+        Ok(out)
     }
 }
