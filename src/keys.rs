@@ -157,6 +157,27 @@ impl Keymap {
             };
             bindings.insert(chord, action);
         }
+        // Arrow-key navigation for users who don't reach for vim keys. The
+        // action→key config map holds only one key per action, so these can't
+        // live in `default_global`; hardcode them here. `or_insert` means an
+        // explicit user binding for the same chord still wins.
+        for (code, action) in [
+            (KeyCode::Up, Action::Up),
+            (KeyCode::Down, Action::Down),
+            (KeyCode::Left, Action::Back),
+            (KeyCode::Right, Action::Activate),
+            (KeyCode::PageUp, Action::PageUp),
+            (KeyCode::PageDown, Action::PageDown),
+        ] {
+            bindings
+                .entry(KeyChord {
+                    code,
+                    ctrl: false,
+                    shift: false,
+                    alt: false,
+                })
+                .or_insert(action);
+        }
         let mut leaders: HashMap<KeyChord, LeaderMap> = HashMap::new();
         for (leader_key, sub) in &cfg.leaders {
             let Some(leader_chord) = parse_chord(leader_key) else {
