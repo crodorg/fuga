@@ -5,9 +5,9 @@
 ```
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Rust 2021](https://img.shields.io/badge/edition-2021-dea584.svg)](https://doc.rust-lang.org/edition-guide/rust-2021/)
+[![Rust 2024](https://img.shields.io/badge/edition-2024-dea584.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey.svg)](#)
-[![Status](https://img.shields.io/badge/status-v0.2.0-orange.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-v0.3.0-orange.svg)](CHANGELOG.md)
 
 Terminal-native music library aggregator. One TUI, one queue, many sources:
 local files (via MPD), internet radio, SomaFM, Spotify, YouTube. Inline
@@ -41,7 +41,7 @@ terminal.
 
 ## Status
 
-v0.2.1 — Local, radio, SomaFM, Spotify, and YouTube all work end-to-end
+v0.3.0 — Local, radio, SomaFM, Spotify, and YouTube all work end-to-end
 (browse, play, queue, search, control). Synced lyrics (`B`) for local,
 Spotify, and YouTube tracks. Remote sources stream rows into the view as
 each page arrives. macOS media keys + Now Playing widget are wired
