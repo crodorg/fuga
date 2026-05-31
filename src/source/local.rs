@@ -491,14 +491,6 @@ impl LocalSource {
                     });
                     cur_is_file = false;
                 }
-                "file" if dir.is_empty() => {
-                    // Root of the Directories tab is a folder browser: hide
-                    // loose top-level files (download dumps land here as
-                    // "Artist - Title.mp3" and bury the artist folders). They
-                    // stay reachable via Albums / Search. Files inside any
-                    // subdirectory still list normally.
-                    cur_is_file = false;
-                }
                 "file" => {
                     let leaf = leaf_name(v);
                     out.push(Entry {
