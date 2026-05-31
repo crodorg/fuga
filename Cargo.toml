@@ -1,7 +1,7 @@
 [package]
 name = "fuga"
 version = "0.3.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 description = "Terminal-native music library aggregator"
 authors = ["Chris Rodriguez <github@crod.org>"]
