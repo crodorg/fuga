@@ -1723,6 +1723,32 @@ impl MusicSource for SpotifySource {
         result
     }
 
+    async fn invalidate(&self, path: &str) {
+        self.browse_cache.invalidate(path).await;
+    }
+
+    async fn view_snapshot(&self, path: &str) -> Option<String> {
+        let api = self.api.lock().await;
+        if path == "spotify:view:saved_tracks" {
+            // Total liked-song count via a 1-item page — a cheap change token
+            // (no per-track hydration). Add-then-remove nets the same count
+            // and is missed; manual refresh (`r`) covers that rare case.
+            let page = api
+                .current_user_saved_tracks_manual(None, Some(1), Some(0))
+                .await
+                .ok()?;
+            return Some(format!("n={}", page.total));
+        }
+        if path.starts_with("spotify:playlist:") {
+            // Web API snapshot_id changes on any edit. `fields=snapshot_id`
+            // keeps the response tiny.
+            let pid = rspotify::model::PlaylistId::from_id_or_uri(path).ok()?;
+            let pl = api.playlist(pid, Some("snapshot_id"), None).await.ok()?;
+            return Some(pl.snapshot_id);
+        }
+        None
+    }
+
     async fn browse_streaming(
         &self,
         path: &str,

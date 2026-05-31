@@ -143,6 +143,16 @@ impl BrowseCache {
         Ok(())
     }
 
+    /// Drop the cached entry for `key` (memory + disk) so the next browse
+    /// refetches live. Used by force-refresh and the open-view change poller.
+    pub async fn invalidate(&self, key: &str) {
+        if let Ok(mut m) = self.mem.lock() {
+            m.pop(key);
+        }
+        let path = self.path_for(key);
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
     /// Raw access bypassing the TTL classifier. Returns the stored entries
     /// and revision regardless of age. Playlist-full callers use this to
     /// decide freshness from the revision rather than a clock-based TTL.

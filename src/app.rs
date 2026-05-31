@@ -246,6 +246,13 @@ pub struct App {
     pub shuffle: bool,
     pub repeat: RepeatMode,
     pub tick_counter: u32,
+    /// Baseline change-token `(path, snapshot)` for the currently-open
+    /// pollable Spotify view (Liked / a playlist). The open-view poller
+    /// compares fresh snapshots against this to auto-refresh on external edits.
+    pub open_view_snapshot: Option<(String, String)>,
+    /// Slot a background view-poll task writes its `(path, snapshot)` into;
+    /// drained on the next tick. Keeps the Spotify API lock off the event loop.
+    pub poll_result: std::sync::Arc<std::sync::Mutex<Option<(String, String)>>>,
 
     pub keymap: Keymap,
     pub leader: Option<LeaderMap>,
@@ -488,6 +495,8 @@ impl App {
             shuffle: false,
             repeat: RepeatMode::Off,
             tick_counter: 0,
+            open_view_snapshot: None,
+            poll_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             keymap,
             leader: None,
             leader_deadline: None,
@@ -2346,18 +2355,60 @@ impl App {
     }
 
     async fn refresh_current_view(&mut self) {
-        // Re-fetch the topmost view of the active browse category. If the
-        // active tab is non-browse (Queue/Search) or the active category has
-        // no state, mark dirty and bail.
         let cat = self.active_category();
         if !cat.is_browse() {
             self.dirty = true;
             return;
         }
-        // Drop the loaded flag and re-run the lazy fetch so the category's
-        // root view comes back fresh. Refreshing intermediate descents would
-        // need the original browse path, which we don't preserve in the
-        // stack — out of scope for Slice 1.
+        // Re-baseline the open-view poller so the reload doesn't re-trigger it.
+        self.open_view_snapshot = None;
+
+        // Preferred path: re-stream the current Entries view in place so the
+        // descent is preserved (Liked Songs, a playlist, …) and bypass the
+        // browse cache so an external change (a newly-liked song) shows up —
+        // without this the cache serves the same `Fresh` copy for an hour.
+        let descend_uri = self
+            .category_states
+            .get(&cat)
+            .and_then(|s| s.descend_uris.last().cloned());
+        let top_is_entries = matches!(
+            self.category_states.get(&cat).and_then(|s| s.stack.last()),
+            Some(LibraryView::Entries { .. })
+        );
+        if let (Some(uri), true) = (descend_uri, top_is_entries) {
+            let scheme = uri.split(':').next().unwrap_or("");
+            if let Some(src) = self.dispatcher.get(scheme).cloned() {
+                src.invalidate(&uri).await;
+                let view_id = if let Some(s) = self.category_states.get_mut(&cat) {
+                    if let Some(LibraryView::Entries { entries, .. }) = s.stack.last_mut() {
+                        entries.clear();
+                    }
+                    s.cursor = 0;
+                    s.top = 0;
+                    s.descend_epoch = s.descend_epoch.wrapping_add(1);
+                    s.streaming = true;
+                    ViewId {
+                        category: cat,
+                        depth: s.stack.len(),
+                        epoch: s.descend_epoch,
+                    }
+                } else {
+                    return;
+                };
+                self.dirty = true;
+                spawn_browse_stream(src, uri, view_id, self.row_batch_tx.clone());
+                self.set_status("refreshed");
+                return;
+            }
+        }
+
+        // Fallback (root view, or a non-streamed Tracks view like an album
+        // expansion): drop the root's cache, then re-run the lazy load.
+        if let Ok((scheme, _label, root_uri)) = self.category_root_request(cat) {
+            if let Some(src) = self.dispatcher.get(scheme).cloned() {
+                src.invalidate(&root_uri).await;
+            }
+        }
         if let Some(s) = self.category_states.get_mut(&cat) {
             s.stack.clear();
             s.parent_cursors.clear();
@@ -2370,6 +2421,67 @@ impl App {
         }
         self.ensure_active_loaded().await;
         self.set_status("refreshed");
+    }
+
+    /// Kick a background task that fetches a cheap change-token for the
+    /// currently-open pollable Spotify view (Liked / a playlist) and stashes
+    /// it in `poll_result`. Spawned so the Spotify API lock — which a large
+    /// browse can hold for seconds — never stalls the event loop.
+    fn spawn_view_poll(&self) {
+        let cat = self.active_category();
+        if !cat.is_browse() {
+            return;
+        }
+        let Some(path) = self
+            .category_states
+            .get(&cat)
+            .and_then(|s| s.descend_uris.last().cloned())
+        else {
+            return;
+        };
+        let pollable =
+            path == "spotify:view:saved_tracks" || path.starts_with("spotify:playlist:");
+        if !pollable {
+            return;
+        }
+        let Some(src) = self.dispatcher.get("spotify").cloned() else {
+            return;
+        };
+        let slot = self.poll_result.clone();
+        tokio::spawn(async move {
+            if let Some(snap) = src.view_snapshot(&path).await {
+                if let Ok(mut g) = slot.lock() {
+                    *g = Some((path, snap));
+                }
+            }
+        });
+    }
+
+    /// Act on a `(path, snapshot)` produced by `spawn_view_poll`. Refreshes
+    /// the open view when its snapshot changed since the baseline; otherwise
+    /// just records the baseline. Dropped if the user navigated away.
+    async fn handle_view_poll(&mut self, path: String, snap: String) {
+        let cur_path = {
+            let cat = self.active_category();
+            self.category_states
+                .get(&cat)
+                .and_then(|s| s.descend_uris.last().cloned())
+        };
+        if cur_path.as_deref() != Some(path.as_str()) {
+            return;
+        }
+        match &self.open_view_snapshot {
+            Some((p, s)) if p == &path => {
+                if s != &snap {
+                    self.open_view_snapshot = Some((path, snap));
+                    self.refresh_current_view().await;
+                    self.set_status("refreshed — external change");
+                }
+            }
+            _ => {
+                self.open_view_snapshot = Some((path, snap));
+            }
+        }
     }
 
     async fn toggle_pause(&mut self) -> Result<()> {
@@ -3179,6 +3291,16 @@ impl App {
             }
         }
         self.tick_counter = self.tick_counter.wrapping_add(1);
+        // Open-view change polling (Spotify Liked / playlists). Drain any
+        // snapshot a background poll produced, then kick a fresh poll every
+        // ~20s (80 ticks * 250ms). Detects external edits and auto-refreshes.
+        let polled = self.poll_result.lock().ok().and_then(|mut g| g.take());
+        if let Some((path, snap)) = polled {
+            self.handle_view_poll(path, snap).await;
+        }
+        if self.tick_counter.is_multiple_of(80) {
+            self.spawn_view_poll();
+        }
         // Repaint when any browse view is mid-stream so the animated
         // header dots actually advance (otherwise the tick early-returns
         // below for non-playing sessions and the dots freeze).

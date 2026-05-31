@@ -58,6 +58,18 @@ pub trait MusicSource: Send + Sync {
         Ok(())
     }
 
+    /// Drop any cached browse result for `path` so the next browse refetches
+    /// live data. Default: no-op (sources without a browse cache).
+    async fn invalidate(&self, _path: &str) {}
+
+    /// A cheap change-token for a pollable view (e.g. Spotify Liked total or a
+    /// playlist snapshot id). `None` means the path isn't pollable or the
+    /// lookup failed. The app polls this for the open view to auto-refresh on
+    /// external edits. Default: not pollable.
+    async fn view_snapshot(&self, _path: &str) -> Option<String> {
+        None
+    }
+
     /// Art bytes (decoded later by ArtCache).
     async fn art(&self, _uri: &str, _size: ArtSize) -> Result<Vec<u8>> {
         Err(anyhow::anyhow!("art not supported"))
