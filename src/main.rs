@@ -344,7 +344,14 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
     // local album covers, lsinfo files) and the old cap thrashed.
     let art = Arc::new(ArtCache::new(art_dir(&cache_dir), 8, 500));
 
-    let term = Term::probe(ThumbMode::from_config(&config.ui.thumb_mode)).unwrap_or(Term {
+    // NB: must be unwrap_or_else, not unwrap_or — unwrap_or evaluates its
+    // argument eagerly, and Picker::halfblocks() runs ratatui-image's tmux
+    // detection, which resets this pane's allow-passthrough to "on" ~50ms
+    // AFTER Term::probe's counter-override set it to "all". With "on", kitty
+    // transmissions from a hidden tmux window are dropped, and since each
+    // protocol transmits exactly once, art that (re)transmits while hidden
+    // is permanently blank.
+    let term = Term::probe(ThumbMode::from_config(&config.ui.thumb_mode)).unwrap_or_else(|_| Term {
         picker: ratatui_image::picker::Picker::halfblocks(),
         mode: ThumbMode::Off,
         kitty_capable: false,
