@@ -61,6 +61,15 @@ impl Term {
     /// reader starts.
     pub fn probe(config_mode: ThumbMode) -> Result<Self> {
         let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+        // ratatui-image's probe sets this pane's allow-passthrough to "on"
+        // (visible-only), so kitty re-transmits are dropped while our tmux
+        // window is hidden and art comes back broken after a window switch.
+        // Upgrade the pane option to "all".
+        if std::env::var_os("TMUX").is_some() {
+            let _ = std::process::Command::new("tmux")
+                .args(["set", "-p", "allow-passthrough", "all"])
+                .output();
+        }
         let kitty_capable = matches!(picker.protocol_type(), ProtocolType::Kitty);
 
         let mode = match config_mode {
