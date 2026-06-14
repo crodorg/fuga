@@ -1,18 +1,18 @@
 use std::time::Duration;
 
+use image::imageops::FilterType;
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs, Wrap};
-use ratatui::Frame;
-use image::imageops::FilterType;
 use ratatui_image::{Resize, StatefulImage};
 
 use crate::app::{App, LibraryView};
 use crate::config::TabAlignment;
 use crate::theme::Theme;
 use crate::types::{Category, PlayState};
-use crate::widgets::thumb_list::{render_thumb_list, ThumbListCtx, ThumbRowSpec};
+use crate::widgets::thumb_list::{ThumbListCtx, ThumbRowSpec, render_thumb_list};
 
 /// Build a `ThumbRowSpec` from a browse `Entry`. Track entries get the
 /// rmpc-style 4-column layout; everything else (album/artist/playlist
@@ -298,7 +298,10 @@ fn render_expanded_art(app: &mut App, f: &mut Frame<'_>, area: Rect) {
         let rect = Resize::Fit(None).render_area(&source, font_size, avail);
         (rect.width.max(1), rect.height.max(1))
     } else {
-        (budget_w.saturating_sub(2).max(1), budget_h.saturating_sub(2).max(1))
+        (
+            budget_w.saturating_sub(2).max(1),
+            budget_h.saturating_sub(2).max(1),
+        )
     };
     let w = inner_w_cells.saturating_add(2);
     let h = inner_h_cells.saturating_add(2);
@@ -322,7 +325,12 @@ fn render_expanded_art(app: &mut App, f: &mut Frame<'_>, area: Rect) {
         }
     }
 
-    let rect = Rect { x, y, width: w, height: h };
+    let rect = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
     f.render_widget(Clear, rect);
     let block = Block::default()
         .title(Span::styled(
@@ -365,8 +373,7 @@ fn record_tab_rects(app: &mut App, area: Rect) {
         .iter()
         .map(|c| c.label_for(mode).chars().count() as u16 + 2)
         .collect();
-    let total: u16 = widths.iter().copied().sum::<u16>()
-        + (widths.len().saturating_sub(1)) as u16; // separators
+    let total: u16 = widths.iter().copied().sum::<u16>() + (widths.len().saturating_sub(1)) as u16; // separators
     let mut x = match app.tab_alignment {
         TabAlignment::Left => inner.x.saturating_add(1),
         TabAlignment::Center => inner
@@ -468,8 +475,7 @@ fn render_tabs(app: &App, f: &mut Frame<'_>, area: Rect) {
         .iter()
         .map(|c| c.label_for(mode).chars().count() as u16 + 2)
         .collect();
-    let total: u16 = widths.iter().copied().sum::<u16>()
-        + (widths.len().saturating_sub(1)) as u16;
+    let total: u16 = widths.iter().copied().sum::<u16>() + (widths.len().saturating_sub(1)) as u16;
     let pad = inner.width.saturating_sub(total);
     let (left_pad, right_pad) = match app.tab_alignment {
         TabAlignment::Left => (0u16, pad),
@@ -606,9 +612,18 @@ fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option
     // the block. tick_counter advances every 250ms so phase cycles ~750ms.
     // "loading" prefix keeps the indicator readable on a busy header; the
     // bare dot dance was easy to miss at the very edge.
-    let right_title = if app.category_states.get(&cat).map(|s| s.streaming).unwrap_or(false) {
+    let right_title = if app
+        .category_states
+        .get(&cat)
+        .map(|s| s.streaming)
+        .unwrap_or(false)
+    {
         let phase = (app.tick_counter as usize) % 3;
-        let dots = match phase { 0 => ".  ", 1 => ".. ", _ => "..." };
+        let dots = match phase {
+            0 => ".  ",
+            1 => ".. ",
+            _ => "...",
+        };
         Some(format!("loading{dots}"))
     } else {
         None
@@ -689,7 +704,10 @@ fn render_queue(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option<
         })
         .collect();
     let rows: Vec<ThumbRowSpec> = match &filter_indices {
-        Some(idx) => idx.iter().filter_map(|i| all_rows.get(*i).cloned()).collect(),
+        Some(idx) => idx
+            .iter()
+            .filter_map(|i| all_rows.get(*i).cloned())
+            .collect(),
         None => all_rows,
     };
     let filter_buf = app.filter_input.clone();
@@ -943,9 +961,24 @@ fn render_bottom_bar(app: &mut App, f: &mut Frame<'_>, area: Rect) {
     if row0_right_rect.width >= ROW0_RIGHT_SAMPLE.len() as u16 {
         let base_x = row0_right_rect.x;
         let y = row0_right_rect.y;
-        app.prev_rect = Some(Rect { x: base_x, y, width: 2, height: 1 });
-        app.playpause_rect = Some(Rect { x: base_x + 4, y, width: 9, height: 1 });
-        app.next_rect = Some(Rect { x: base_x + 15, y, width: 2, height: 1 });
+        app.prev_rect = Some(Rect {
+            x: base_x,
+            y,
+            width: 2,
+            height: 1,
+        });
+        app.playpause_rect = Some(Rect {
+            x: base_x + 4,
+            y,
+            width: 9,
+            height: 1,
+        });
+        app.next_rect = Some(Rect {
+            x: base_x + 15,
+            y,
+            width: 2,
+            height: 1,
+        });
     } else {
         app.prev_rect = None;
         app.playpause_rect = None;
@@ -997,12 +1030,7 @@ fn render_bottom_bar(app: &mut App, f: &mut Frame<'_>, area: Rect) {
 /// Render the progress bar (and elapsed/total labels) in a single row,
 /// returning the inner clickable rect of the bar (None if the row is too
 /// narrow). Reused by both the 4-row and degraded layouts.
-fn render_progress_row(
-    app: &App,
-    f: &mut Frame<'_>,
-    area: Rect,
-    theme: &Theme,
-) -> Option<Rect> {
+fn render_progress_row(app: &App, f: &mut Frame<'_>, area: Rect, theme: &Theme) -> Option<Rect> {
     let (elapsed, duration) = app
         .playback
         .as_ref()
@@ -1046,11 +1074,7 @@ fn shuf_rep_spans(app: &App, theme: &Theme) -> Vec<Span<'static>> {
 /// Build the source-metadata line: `SPT · OGG · 320 kbps`. Codec + bitrate
 /// segments are dropped when the active source doesn't supply them.
 fn source_meta_line(app: &App) -> Line<'static> {
-    let scheme = app
-        .queue
-        .current()
-        .map(|q| q.source_scheme)
-        .unwrap_or("");
+    let scheme = app.queue.current().map(|q| q.source_scheme).unwrap_or("");
     let mut parts: Vec<String> = vec![short_scheme(scheme).to_string()];
     if let Some(p) = app.playback.as_ref() {
         if let Some(c) = p.codec.as_deref() {
@@ -1064,10 +1088,7 @@ fn source_meta_line(app: &App) -> Line<'static> {
             }
         }
     }
-    Line::from(Span::styled(
-        parts.join(" \u{00b7} "),
-        app.theme.header(),
-    ))
+    Line::from(Span::styled(parts.join(" \u{00b7} "), app.theme.header()))
 }
 
 /// Three-letter abbreviations for the bottom-bar source indicator. Tab
@@ -1202,7 +1223,11 @@ fn compute_art_dims(app: &App, area: Rect, bottom_h: u16) -> Option<(u16, u16)> 
             .now_playing_aspect
             .map(|(w, h)| (w as f64, h as f64))
             .unwrap_or((1.0, 1.0));
-        let img_aspect = if img_h_px > 0.0 { img_w_px / img_h_px } else { 1.0 };
+        let img_aspect = if img_h_px > 0.0 {
+            img_w_px / img_h_px
+        } else {
+            1.0
+        };
         let inner_h_cells = bottom_h.saturating_sub(1).max(1);
         let inner_h_px = inner_h_cells as f64 * cell_h_px;
         let inner_w_px = inner_h_px * img_aspect;
@@ -1407,8 +1432,6 @@ fn render_art_panel(
     }
 }
 
-
-
 /// `0:42 ━━━━●─────────── 4:17` style bar. For radio (no duration) renders an
 /// indeterminate scrolling pattern with elapsed-only timestamp.
 fn build_progress_bar(
@@ -1445,8 +1468,7 @@ fn build_progress_bar(
                 6 => "▊",
                 _ => "▉",
             };
-            let unfilled_w = bar_width
-                .saturating_sub(full + if part > 0 { 1 } else { 0 });
+            let unfilled_w = bar_width.saturating_sub(full + if part > 0 { 1 } else { 0 });
             let unfilled_part: String = "·".repeat(unfilled_w);
             let mut spans = vec![
                 Span::styled(format!("{elapsed_str} "), theme.dim()),
@@ -1621,16 +1643,25 @@ fn render_help(app: &App, f: &mut Frame<'_>, area: Rect) {
     lines.push(Line::from(Span::styled("Bindings", app.theme.header())));
     for (k, action) in &bindings {
         lines.push(Line::from(vec![
-            Span::styled(format!("{k:<width$}", width = key_w as usize), app.theme.accent()),
+            Span::styled(
+                format!("{k:<width$}", width = key_w as usize),
+                app.theme.accent(),
+            ),
             Span::styled(action.clone(), app.theme.fg()),
         ]));
     }
     if !leaders.is_empty() {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("Leader chords", app.theme.header())));
+        lines.push(Line::from(Span::styled(
+            "Leader chords",
+            app.theme.header(),
+        )));
         for (k, label, descr) in &leaders {
             lines.push(Line::from(vec![
-                Span::styled(format!("{k:<width$}", width = key_w as usize), app.theme.accent()),
+                Span::styled(
+                    format!("{k:<width$}", width = key_w as usize),
+                    app.theme.accent(),
+                ),
                 Span::styled(label.clone(), app.theme.fg()),
                 Span::raw("  "),
                 Span::styled(descr.clone(), app.theme.dim()),

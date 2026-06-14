@@ -57,9 +57,8 @@ impl BrowseCache {
         if let Err(e) = std::fs::create_dir_all(&dir) {
             tracing::warn!("spotify cache dir create failed at {}: {e}", dir.display());
         }
-        let cap = std::num::NonZeroUsize::new(capacity).unwrap_or(
-            std::num::NonZeroUsize::new(64).unwrap(),
-        );
+        let cap = std::num::NonZeroUsize::new(capacity)
+            .unwrap_or(std::num::NonZeroUsize::new(64).unwrap());
         Self {
             dir,
             mem: Mutex::new(LruCache::new(cap)),

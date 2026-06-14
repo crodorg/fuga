@@ -434,7 +434,5 @@ fn resolve_dir(env_var: &str, dotfile_subpath: &str, fallback: Option<PathBuf>) 
             return dotfile;
         }
     }
-    fallback
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("fuga")
+    fallback.unwrap_or_else(|| PathBuf::from(".")).join("fuga")
 }

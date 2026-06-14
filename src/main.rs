@@ -26,16 +26,16 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use crate::app::App;
-use crate::art_cache::{art_dir, ArtCache};
+use crate::art_cache::{ArtCache, art_dir};
 use crate::config::Config;
 use crate::dispatch::Dispatcher;
+use crate::source::MusicSource;
 use crate::source::local::LocalSource;
 use crate::source::radio::RadioSource;
 use crate::source::somafm::SomaFmSource;
-use crate::source::spotify::auth as spotify_auth;
 use crate::source::spotify::SpotifySource;
+use crate::source::spotify::auth as spotify_auth;
 use crate::source::youtube::YouTubeSource;
-use crate::source::MusicSource;
 use crate::term_probe::{Term, ThumbMode};
 
 #[derive(Debug, Parser)]
@@ -116,10 +116,8 @@ fn main() -> Result<()> {
         std::process::exit(101);
     }));
 
-    let (event_tx, event_rx) =
-        tokio::sync::mpsc::unbounded_channel::<mpris::MprisEvent>();
-    let (command_tx, _command_rx) =
-        tokio::sync::mpsc::unbounded_channel::<mpris::MprisCommand>();
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<mpris::MprisEvent>();
+    let (command_tx, _command_rx) = tokio::sync::mpsc::unbounded_channel::<mpris::MprisCommand>();
     let handles = mpris::MprisHandles {
         event_rx,
         command_tx,
@@ -295,9 +293,10 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
             Ok(true) => {
                 let api = std::sync::Arc::new(tokio::sync::Mutex::new(client));
                 let browse_cache_dir = cache_dir.join("spotify_browse");
-                let browse_cache = Arc::new(
-                    crate::source::spotify::cache::BrowseCache::new(browse_cache_dir, 64),
-                );
+                let browse_cache = Arc::new(crate::source::spotify::cache::BrowseCache::new(
+                    browse_cache_dir,
+                    64,
+                ));
                 let spotify = Arc::new(SpotifySource::new(
                     api,
                     http.clone(),
@@ -311,8 +310,7 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
                 tracing::warn!(
                     "Spotify token missing; run `fuga --spotify-auth` once to authorize"
                 );
-                spotify_status =
-                    Some("Spotify not authed — run `fuga --spotify-auth`".into());
+                spotify_status = Some("Spotify not authed — run `fuga --spotify-auth`".into());
             }
             Err(e) => {
                 tracing::warn!("Spotify token load error: {e}; skipping source");
@@ -351,11 +349,12 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
     // transmissions from a hidden tmux window are dropped, and since each
     // protocol transmits exactly once, art that (re)transmits while hidden
     // is permanently blank.
-    let term = Term::probe(ThumbMode::from_config(&config.ui.thumb_mode)).unwrap_or_else(|_| Term {
-        picker: ratatui_image::picker::Picker::halfblocks(),
-        mode: ThumbMode::Off,
-        kitty_capable: false,
-    });
+    let term =
+        Term::probe(ThumbMode::from_config(&config.ui.thumb_mode)).unwrap_or_else(|_| Term {
+            picker: ratatui_image::picker::Picker::halfblocks(),
+            mode: ThumbMode::Off,
+            kitty_capable: false,
+        });
 
     let thumb_cells = config.ui.thumb_cells;
     let art_height_pct = config.ui.art_height_pct;
@@ -453,7 +452,16 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
         },
     };
 
-    app::run(config, conn.events, app, wake_rx, row_batch_rx, spotify_event_rx, mpris).await
+    app::run(
+        config,
+        conn.events,
+        app,
+        wake_rx,
+        row_batch_rx,
+        spotify_event_rx,
+        mpris,
+    )
+    .await
 }
 
 /// Modes registered with the dispatcher, ordered the way `t` should cycle.

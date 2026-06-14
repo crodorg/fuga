@@ -11,11 +11,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use mpd_client::{client::Client, commands};
 use serde::{Deserialize, Serialize};
@@ -24,8 +24,8 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
 
-use crate::source::mpd_shared::{mpd_set_volume, mpd_status};
 use crate::source::MusicSource;
+use crate::source::mpd_shared::{mpd_set_volume, mpd_status};
 use crate::types::{ArtSize, Entry, EntryKind, Item, ItemDisplay, Playable, PlaybackStatus};
 
 /// Per-call timeout for short yt-dlp invocations (search / resolve).
@@ -115,13 +115,11 @@ impl YouTubeSource {
             }
         }
         let saved = load_saved(&saved_path);
-        let download_dir = download_dir_override
-            .or(mpd_music_dir)
-            .unwrap_or_else(|| {
-                dirs::download_dir()
-                    .or_else(|| dirs::home_dir().map(|h| h.join("Downloads")))
-                    .unwrap_or_else(|| PathBuf::from("."))
-            });
+        let download_dir = download_dir_override.or(mpd_music_dir).unwrap_or_else(|| {
+            dirs::download_dir()
+                .or_else(|| dirs::home_dir().map(|h| h.join("Downloads")))
+                .unwrap_or_else(|| PathBuf::from("."))
+        });
         Self {
             mpd,
             http,
@@ -192,11 +190,7 @@ impl YouTubeSource {
     /// embedded metadata + thumbnail. Returns the path written. Drives
     /// yt-dlp as a streaming process so progress percentages can be
     /// surfaced to the UI in real time.
-    pub async fn do_download(
-        &self,
-        uri: &str,
-        progress: Option<Arc<AtomicU8>>,
-    ) -> Result<PathBuf> {
+    pub async fn do_download(&self, uri: &str, progress: Option<Arc<AtomicU8>>) -> Result<PathBuf> {
         let video_id = uri
             .strip_prefix("youtube:")
             .ok_or_else(|| anyhow!("not a youtube URI: {uri}"))?;
@@ -423,7 +417,7 @@ fn saved_to_item(s: &SavedTrack) -> Item {
             sort_hint: None,
             track_no: None,
             year_hint: None,
-                        },
+        },
     }
 }
 
@@ -669,11 +663,7 @@ impl MusicSource for YouTubeSource {
         self.write_saved().await
     }
 
-    async fn download(
-        &self,
-        uri: &str,
-        progress: Option<Arc<AtomicU8>>,
-    ) -> Result<PathBuf> {
+    async fn download(&self, uri: &str, progress: Option<Arc<AtomicU8>>) -> Result<PathBuf> {
         self.do_download(uri, progress).await
     }
 }
@@ -684,15 +674,21 @@ mod tests {
 
     #[test]
     fn classify_known_errors() {
-        assert!(classify_ytdlp_error("HTTP Error 429: Too Many Requests")
-            .to_string()
-            .contains("rate-limited"));
-        assert!(classify_ytdlp_error("ERROR: Private video")
-            .to_string()
-            .contains("private"));
-        assert!(classify_ytdlp_error("ERROR: nsig extraction failed")
-            .to_string()
-            .contains("yt-dlp -U"));
+        assert!(
+            classify_ytdlp_error("HTTP Error 429: Too Many Requests")
+                .to_string()
+                .contains("rate-limited")
+        );
+        assert!(
+            classify_ytdlp_error("ERROR: Private video")
+                .to_string()
+                .contains("private")
+        );
+        assert!(
+            classify_ytdlp_error("ERROR: nsig extraction failed")
+                .to_string()
+                .contains("yt-dlp -U")
+        );
     }
 
     #[test]

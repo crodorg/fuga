@@ -13,11 +13,11 @@
 //!
 //! Used by `mod.rs` for the `playlist:items` endpoint.
 
-use anyhow::{anyhow, Context, Result};
-use rspotify::clients::BaseClient;
+use anyhow::{Context, Result, anyhow};
 use rspotify::AuthCodePkceSpotify;
+use rspotify::clients::BaseClient;
 use serde::de::DeserializeOwned;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -78,11 +78,7 @@ pub async fn get_normalized<T: DeserializeOwned>(
     loop {
         let token = current_token(api).await?;
         pace_api_call().await;
-        let resp_result = http
-            .get(url.clone())
-            .bearer_auth(&token)
-            .send()
-            .await;
+        let resp_result = http.get(url.clone()).bearer_auth(&token).send().await;
 
         let resp = match resp_result {
             Ok(r) => r,
@@ -223,7 +219,12 @@ async fn no_body_method(
             continue;
         }
         let body = resp.text().await.unwrap_or_default();
-        return Err(anyhow!("spotify {} {} failed: {}", method, path_with_query, body));
+        return Err(anyhow!(
+            "spotify {} {} failed: {}",
+            method,
+            path_with_query,
+            body
+        ));
     }
 }
 

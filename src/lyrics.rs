@@ -183,11 +183,7 @@ fn parse_lrc_line(line: &str) -> Option<(u128, String)> {
     let ms = match frac {
         Some(f) => {
             let v = f.parse::<u64>().unwrap_or(0);
-            if f.len() == 2 {
-                v * 10
-            } else {
-                v
-            }
+            if f.len() == 2 { v * 10 } else { v }
         }
         None => 0,
     };

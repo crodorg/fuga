@@ -11,8 +11,8 @@ use mpd_client::{
 };
 use tokio::net::TcpStream;
 
-use crate::source::mpd_shared::{mpd_set_volume, mpd_status};
 use crate::source::MusicSource;
+use crate::source::mpd_shared::{mpd_set_volume, mpd_status};
 use crate::types::{ArtSize, Entry, EntryKind, Item, ItemDisplay, Playable, PlaybackStatus};
 
 pub struct LocalSource {
@@ -215,10 +215,7 @@ impl MusicSource for LocalSource {
                 // need a smarter incremental approach.
                 let songs = self
                     .client
-                    .command(
-                        commands::Find::new(Filter::tag_exists(Tag::Title))
-                            .window(0..50_000),
-                    )
+                    .command(commands::Find::new(Filter::tag_exists(Tag::Title)).window(0..50_000))
                     .await
                     .context("MPD find all (album list)")?;
                 use std::collections::BTreeMap;
@@ -244,7 +241,7 @@ impl MusicSource for LocalSource {
                         sort_hint: None,
                         track_no: None,
                         year_hint: None,
-                                    };
+                    };
                     out.push(Entry {
                         uri: format!("local:album:{album}"),
                         label: album,
@@ -510,7 +507,7 @@ impl LocalSource {
                             sort_hint: None,
                             track_no: None,
                             year_hint: None,
-                                        }),
+                        }),
                     });
                     cur_is_file = true;
                 }
@@ -572,9 +569,11 @@ impl LocalSource {
                 EntryKind::Playlist => 1,
                 _ => 2,
             };
-            rank(&a.kind)
-                .cmp(&rank(&b.kind))
-                .then_with(|| a.label.to_ascii_lowercase().cmp(&b.label.to_ascii_lowercase()))
+            rank(&a.kind).cmp(&rank(&b.kind)).then_with(|| {
+                a.label
+                    .to_ascii_lowercase()
+                    .cmp(&b.label.to_ascii_lowercase())
+            })
         });
         tracing::info!(
             dir = %dir,

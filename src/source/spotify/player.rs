@@ -3,13 +3,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use librespot::connect::{ConnectConfig, Spirc};
+use librespot::core::SpotifyUri;
 use librespot::core::authentication::Credentials;
 use librespot::core::config::{DeviceType, SessionConfig};
 use librespot::core::session::Session;
 use librespot::core::spotify_id::SpotifyId;
-use librespot::core::SpotifyUri;
 use librespot::playback::audio_backend;
 use librespot::playback::config::{AudioFormat, Bitrate, PlayerConfig};
 use librespot::playback::mixer::softmixer::SoftMixer;

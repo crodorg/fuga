@@ -8,7 +8,7 @@ pub mod raw;
 
 pub use player::SpotifyEvent;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use futures::{StreamExt, TryStreamExt};
 
@@ -23,18 +23,20 @@ const PAGE_LIMIT: usize = 200;
 /// results per type we paginate two pages: offset=0 and offset=10.
 const SEARCH_LIMIT: u32 = 10;
 const SEARCH_PAGES: u32 = 2;
-use rspotify::clients::{BaseClient, OAuthClient};
-use rspotify::prelude::Id;
-use rspotify::model::{AlbumId, ArtistId, PlaylistId, ShowId, TrackId};
 use rspotify::AuthCodePkceSpotify;
+use rspotify::clients::{BaseClient, OAuthClient};
+use rspotify::model::{AlbumId, ArtistId, PlaylistId, ShowId, TrackId};
+use rspotify::prelude::Id;
 use std::sync::Arc;
-use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::SpotifyConfig;
-use crate::source::spotify::player::SpotifyPlayer;
 use crate::source::MusicSource;
-use crate::types::{ArtSize, DeviceEntry, Entry, EntryKind, Item, ItemDisplay, Playable, PlaybackStatus};
+use crate::source::spotify::player::SpotifyPlayer;
+use crate::types::{
+    ArtSize, DeviceEntry, Entry, EntryKind, Item, ItemDisplay, Playable, PlaybackStatus,
+};
 
 pub struct SpotifySource {
     api: Arc<Mutex<AuthCodePkceSpotify>>,
@@ -141,11 +143,7 @@ impl SpotifySource {
             .into_iter()
             .map(|t| Entry {
                 uri: t.uri.clone(),
-                label: format!(
-                    "{} — {}",
-                    t.artist_name.as_deref().unwrap_or(""),
-                    t.name
-                ),
+                label: format!("{} — {}", t.artist_name.as_deref().unwrap_or(""), t.name),
                 kind: EntryKind::Track,
                 display: Some(ItemDisplay {
                     title: t.name,
@@ -157,7 +155,7 @@ impl SpotifySource {
                     sort_hint: None,
                     track_no: None,
                     year_hint: None,
-                                }),
+                }),
             })
             .collect())
     }
@@ -177,10 +175,7 @@ impl SpotifySource {
         Ok(albums
             .into_iter()
             .map(|a| {
-                let year_suffix = a
-                    .year
-                    .map(|y| format!(" ({y})"))
-                    .unwrap_or_default();
+                let year_suffix = a.year.map(|y| format!(" ({y})")).unwrap_or_default();
                 Entry {
                     uri: a.uri.clone(),
                     label: format!("{}{}", a.name, year_suffix),
@@ -195,7 +190,7 @@ impl SpotifySource {
                         sort_hint: None,
                         track_no: None,
                         year_hint: None,
-                                    }),
+                    }),
                 }
             })
             .collect())
@@ -232,8 +227,7 @@ impl SpotifySource {
             let session = p.session.clone();
             drop(g);
             tracing::info!(playlist_id, "mercury: fetching URI list");
-            let (mut uris, revision) =
-                metadata::playlist_track_uris(&session, playlist_id).await?;
+            let (mut uris, revision) = metadata::playlist_track_uris(&session, playlist_id).await?;
             let mraw: Vec<i64> = uris.iter().map(|(_, h)| *h).collect();
             let muniq: std::collections::HashSet<i64> = mraw.iter().copied().collect();
             tracing::info!(
@@ -300,9 +294,14 @@ impl SpotifySource {
             .iter()
             .map(|(u, _)| u.clone())
             .collect();
-        tracing::info!(offset, end, total, window = window_uris.len(), "mercury: hydrate window");
-        let hydrated =
-            hydrate_uris_to_entries(&session, &self.api, &self.http, &window_uris).await;
+        tracing::info!(
+            offset,
+            end,
+            total,
+            window = window_uris.len(),
+            "mercury: hydrate window"
+        );
+        let hydrated = hydrate_uris_to_entries(&session, &self.api, &self.http, &window_uris).await;
         tracing::info!(offset, end, "mercury: hydrate done");
         let mut out: Vec<Entry> = window_uris
             .iter()
@@ -359,9 +358,7 @@ impl SpotifySource {
         }
         let mut off = PAGE_LIMIT;
         while off < total {
-            let key = format!(
-                "spotify:plpage:v2:{pl_id_str}::rev={revision}::off={off}"
-            );
+            let key = format!("spotify:plpage:v2:{pl_id_str}::rev={revision}::off={off}");
             let Some((mut page, rev)) = self.browse_cache.get_raw(&key).await else {
                 // Missing page — return only what we have plus the
                 // original sentinel so the user can resume paging.
@@ -404,11 +401,7 @@ impl SpotifySource {
             .into_iter()
             .map(|t| Entry {
                 uri: t.uri.clone(),
-                label: format!(
-                    "{} — {}",
-                    t.artist_name.as_deref().unwrap_or(""),
-                    t.name
-                ),
+                label: format!("{} — {}", t.artist_name.as_deref().unwrap_or(""), t.name),
                 kind: EntryKind::Track,
                 display: Some(ItemDisplay {
                     title: t.name,
@@ -420,7 +413,7 @@ impl SpotifySource {
                     sort_hint: None,
                     track_no: None,
                     year_hint: None,
-                                }),
+                }),
             })
             .collect())
     }
@@ -449,7 +442,7 @@ impl SpotifySource {
                     sort_hint: None,
                     track_no: None,
                     year_hint: None,
-                                }),
+                }),
             })
             .collect())
     }
@@ -504,7 +497,7 @@ impl SpotifySource {
                         sort_hint: None,
                         track_no: None,
                         year_hint: None,
-                                    }),
+                    }),
                 });
             }
             return Ok(out);
@@ -525,10 +518,7 @@ impl SpotifySource {
                 .ok_or_else(|| anyhow!("spotify player not initialised"))?;
             let pid = metadata::find_user_playlist_id_by_name(&p.session, name).await?;
             drop(g);
-            return Box::pin(
-                self.browse_uncached(&format!("spotify:playlist:{pid}")),
-            )
-            .await;
+            return Box::pin(self.browse_uncached(&format!("spotify:playlist:{pid}"))).await;
         }
         let api = self.api.lock().await;
         match base_path {
@@ -547,13 +537,8 @@ impl SpotifySource {
                         .iter()
                         .min_by_key(|i| i.width.unwrap_or(0))
                         .map(|i| i.url.clone());
-                    let year: Option<i32> = a
-                        .release_date
-                        .get(..4)
-                        .and_then(|s| s.parse().ok());
-                    let year_suffix = year
-                        .map(|y| format!(" ({y})"))
-                        .unwrap_or_default();
+                    let year: Option<i32> = a.release_date.get(..4).and_then(|s| s.parse().ok());
+                    let year_suffix = year.map(|y| format!(" ({y})")).unwrap_or_default();
                     // Sort hint = release-date timestamp so "RecentlyAdded"
                     // axis renders newest-released first (matches the artist
                     // page convention the user expects on this tab).
@@ -577,7 +562,7 @@ impl SpotifySource {
                             sort_hint,
                             track_no: None,
                             year_hint: None,
-                                        }),
+                        }),
                     });
                 }
                 if out.len() == PAGE_LIMIT {
@@ -624,7 +609,7 @@ impl SpotifySource {
                             ),
                             track_no: None,
                             year_hint: None,
-                                        }),
+                        }),
                     });
                 }
                 if out.len() == PAGE_LIMIT {
@@ -711,7 +696,7 @@ impl SpotifySource {
                                 sort_hint: None,
                                 track_no: None,
                                 year_hint: None,
-                                            }),
+                            }),
                         });
                     }
                 }
@@ -751,7 +736,7 @@ impl SpotifySource {
                                     sort_hint: None,
                                     track_no: None,
                                     year_hint: None,
-                                                }),
+                                }),
                             });
                         }
                     }
@@ -849,7 +834,7 @@ impl SpotifySource {
                             sort_hint: None,
                             track_no: None,
                             year_hint: None,
-                                        }),
+                        }),
                     });
                 }
                 Ok(out)
@@ -950,7 +935,7 @@ impl SpotifySource {
                             sort_hint: None,
                             track_no: None,
                             year_hint: None,
-                                        }),
+                        }),
                     });
                 }
                 Ok(out)
@@ -1087,10 +1072,7 @@ impl SpotifySource {
                         // ~1.7e9; positions are <1e5, so position fallbacks
                         // sort below dated items rather than mixing.
                         let pos_fallback = (cursor + idx) as i64;
-                        let added_ts = item
-                            .added_at
-                            .map(|t| t.timestamp())
-                            .unwrap_or(pos_fallback);
+                        let added_ts = item.added_at.map(|t| t.timestamp()).unwrap_or(pos_fallback);
                         let track = match item.item {
                             Some(rspotify::model::PlayableItem::Track(t)) => t,
                             _ => continue,
@@ -1116,7 +1098,9 @@ impl SpotifySource {
                 if hit_forbidden {
                     // Drop the api lock before mercury (ensure_player relocks).
                     drop(api);
-                    return self.browse_playlist_via_mercury(uri, offset, base_path).await;
+                    return self
+                        .browse_playlist_via_mercury(uri, offset, base_path)
+                        .await;
                 }
                 // Diag: confirm Web API path success + sort_hint quality. If
                 // every hint is identical or zero, RecentlyAdded will only
@@ -1147,10 +1131,7 @@ impl SpotifySource {
                     kind: EntryKind::Directory,
                     display: None,
                 };
-                Ok(vec![
-                    mk("top", "Top Tracks"),
-                    mk("albums", "Albums"),
-                ])
+                Ok(vec![mk("top", "Top Tracks"), mk("albums", "Albums")])
             }
             uri if uri.starts_with("spotify:artistview:") => {
                 // All `artistview:*` subs go through mercury — see the
@@ -1216,7 +1197,7 @@ impl SpotifySource {
                             sort_hint,
                             track_no: None,
                             year_hint: None,
-                                        }),
+                        }),
                     });
                 }
                 if hit_cap {
@@ -1238,8 +1219,7 @@ fn parse_release_date_to_ts(s: &str) -> Option<i64> {
     let m: u32 = parts.next().and_then(|x| x.parse().ok()).unwrap_or(1);
     let d: u32 = parts.next().and_then(|x| x.parse().ok()).unwrap_or(1);
     // Cheap epoch approximation — exact UTC math not needed for sort order.
-    let days_since_epoch =
-        ((y - 1970) as i64) * 365 + ((m as i64) - 1) * 30 + (d as i64 - 1);
+    let days_since_epoch = ((y - 1970) as i64) * 365 + ((m as i64) - 1) * 30 + (d as i64 - 1);
     Some(days_since_epoch * 86_400)
 }
 
@@ -1292,7 +1272,7 @@ fn artist_to_item(artist: &rspotify::model::FullArtist) -> Item {
             sort_hint: None,
             track_no: None,
             year_hint: None,
-                        },
+        },
     }
 }
 
@@ -1325,7 +1305,7 @@ fn album_to_item(album: &rspotify::model::SimplifiedAlbum) -> Item {
             sort_hint: None,
             track_no: None,
             year_hint: None,
-                        },
+        },
     }
 }
 
@@ -1358,7 +1338,9 @@ async fn hydrate_uris_to_entries(
         .collect();
     for i in placeholders {
         let uri = &uris[i];
-        let Some(base62) = uri.strip_prefix("spotify:track:") else { continue };
+        let Some(base62) = uri.strip_prefix("spotify:track:") else {
+            continue;
+        };
         let path = format!("tracks/{base62}");
         // Re-acquire the api lock per call instead of holding it across the
         // whole loop. Holding through N * (pace + network) = many seconds
@@ -1372,16 +1354,10 @@ async fn hydrate_uris_to_entries(
         // (each iteration is serial against the api lock), and the user's
         // "load more" click would never return. 5s is generous for a
         // single GET that normally lands in <300ms.
-        let res = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            async {
-                let api_g = api.lock().await;
-                raw::get_normalized::<rspotify::model::FullTrack>(
-                    &api_g, http, &path, &[],
-                )
-                .await
-            },
-        )
+        let res = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let api_g = api.lock().await;
+            raw::get_normalized::<rspotify::model::FullTrack>(&api_g, http, &path, &[]).await
+        })
         .await;
         let res = match res {
             Ok(r) => r,
@@ -1433,11 +1409,7 @@ async fn hydrate_uris_to_entries(
             }
             Some(Entry {
                 uri: uri.clone(),
-                label: format!(
-                    "{} — {}",
-                    t.artist_name.as_deref().unwrap_or(""),
-                    t.name
-                ),
+                label: format!("{} — {}", t.artist_name.as_deref().unwrap_or(""), t.name),
                 kind: EntryKind::Track,
                 display: Some(ItemDisplay {
                     title: t.name,
@@ -1489,7 +1461,7 @@ fn track_to_item(track: &rspotify::model::FullTrack) -> Item {
             sort_hint: None,
             track_no: None,
             year_hint: None,
-                        },
+        },
     }
 }
 
@@ -1519,7 +1491,7 @@ fn playlist_to_item(pl: &rspotify::model::SimplifiedPlaylist) -> Item {
             sort_hint: None,
             track_no: None,
             year_hint: None,
-                        },
+        },
     }
 }
 
@@ -1548,7 +1520,7 @@ fn show_to_item(s: &rspotify::model::SimplifiedShow) -> Item {
             sort_hint: None,
             track_no: None,
             year_hint: None,
-                        },
+        },
     }
 }
 
@@ -1594,17 +1566,46 @@ impl MusicSource for SpotifySource {
         let mut show_futs = Vec::with_capacity(SEARCH_PAGES as usize);
         for i in 0..SEARCH_PAGES {
             let off = Some(i * SEARCH_LIMIT);
-            track_futs.push(api.search(query, SearchType::Track, None, None, Some(SEARCH_LIMIT), off));
-            album_futs.push(api.search(query, SearchType::Album, None, None, Some(SEARCH_LIMIT), off));
-            playlist_futs.push(api.search(query, SearchType::Playlist, None, None, Some(SEARCH_LIMIT), off));
-            show_futs.push(api.search(query, SearchType::Show, None, None, Some(SEARCH_LIMIT), off));
+            track_futs.push(api.search(
+                query,
+                SearchType::Track,
+                None,
+                None,
+                Some(SEARCH_LIMIT),
+                off,
+            ));
+            album_futs.push(api.search(
+                query,
+                SearchType::Album,
+                None,
+                None,
+                Some(SEARCH_LIMIT),
+                off,
+            ));
+            playlist_futs.push(api.search(
+                query,
+                SearchType::Playlist,
+                None,
+                None,
+                Some(SEARCH_LIMIT),
+                off,
+            ));
+            show_futs.push(api.search(
+                query,
+                SearchType::Show,
+                None,
+                None,
+                Some(SEARCH_LIMIT),
+                off,
+            ));
         }
 
         #[derive(serde::Deserialize)]
         struct ArtistsResp {
             artists: Page<FullArtist>,
         }
-        let mut artist_queries: Vec<Vec<(&str, String)>> = Vec::with_capacity(SEARCH_PAGES as usize);
+        let mut artist_queries: Vec<Vec<(&str, String)>> =
+            Vec::with_capacity(SEARCH_PAGES as usize);
         for i in 0..SEARCH_PAGES {
             artist_queries.push(vec![
                 ("q", query.to_string()),
@@ -1821,16 +1822,11 @@ impl MusicSource for SpotifySource {
                     sort_hint,
                     track_no: None,
                     year_hint: None,
-                                }),
+                }),
             };
             all.push(entry.clone());
             batch.push(entry);
-            if batch.len() >= BATCH
-                && tx
-                    .send(Ok(std::mem::take(&mut batch)))
-                    .await
-                    .is_err()
-            {
+            if batch.len() >= BATCH && tx.send(Ok(std::mem::take(&mut batch))).await.is_err() {
                 return;
             }
         }
@@ -1847,13 +1843,12 @@ impl MusicSource for SpotifySource {
         }
     }
 
-
     async fn resolve(&self, uri: &str) -> Result<Playable> {
         Ok(Playable::LibraryUri(uri.to_string()))
     }
 
     async fn play(&self, playable: &Playable) -> Result<()> {
-        use crate::source::spotify::player::{parse_playable_uri, PlayableKind};
+        use crate::source::spotify::player::{PlayableKind, parse_playable_uri};
         let uri = match playable {
             Playable::Url(u) | Playable::LibraryUri(u) => u.as_str(),
         };
@@ -1902,7 +1897,12 @@ impl MusicSource for SpotifySource {
                 let g = self.player.lock().await;
                 match g.as_ref() {
                     Some(p) => {
-                        let pos_ms = p.playback_status().await.elapsed.as_millis().min(u32::MAX as u128) as u32;
+                        let pos_ms = p
+                            .playback_status()
+                            .await
+                            .elapsed
+                            .as_millis()
+                            .min(u32::MAX as u128) as u32;
                         p.current().map(|(kind, id)| (kind, id, pos_ms))
                     }
                     None => None,
@@ -1911,7 +1911,9 @@ impl MusicSource for SpotifySource {
             self.ensure_player().await?; // rebuilds: session was invalid
             if let Some((kind, id, pos_ms)) = resume_at {
                 let g = self.player.lock().await;
-                let p = g.as_ref().ok_or_else(|| anyhow!("player gone after rebuild"))?;
+                let p = g
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("player gone after rebuild"))?;
                 p.load_at(kind, &id, pos_ms)?;
             }
             return Ok(());
@@ -2044,11 +2046,7 @@ impl MusicSource for SpotifySource {
         Ok(())
     }
 
-    async fn remove_from_playlist(
-        &self,
-        playlist_uri: &str,
-        track_uri: &str,
-    ) -> Result<()> {
+    async fn remove_from_playlist(&self, playlist_uri: &str, track_uri: &str) -> Result<()> {
         use rspotify::model::{PlayableId, PlaylistId};
         let pid = PlaylistId::from_id_or_uri(playlist_uri).context("playlist id")?;
         let tid = TrackId::from_id_or_uri(track_uri).context("track id")?;

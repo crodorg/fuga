@@ -1,13 +1,13 @@
 #![allow(dead_code)]
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use mpd_client::{client::Client, commands};
 use reqwest::Url;
 use serde::Deserialize;
 
-use crate::source::mpd_shared::{mpd_set_volume, mpd_status};
 use crate::source::MusicSource;
+use crate::source::mpd_shared::{mpd_set_volume, mpd_status};
 use crate::types::{ArtSize, Entry, EntryKind, Item, ItemDisplay, Playable, PlaybackStatus};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -81,7 +81,7 @@ impl MusicSource for RadioSource {
                     sort_hint: None,
                     track_no: None,
                     year_hint: None,
-                                }),
+                }),
             })
             .collect())
     }
@@ -179,7 +179,7 @@ fn station_to_item(s: &RadioStation) -> Item {
             sort_hint: None,
             track_no: None,
             year_hint: None,
-                        },
+        },
     }
 }
 

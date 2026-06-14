@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use crossterm::event::{Event, EventStream, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use futures::{FutureExt, StreamExt};
-use ratatui::layout::Rect;
 use mpd_client::client::{ConnectionEvent, ConnectionEvents, Subsystem};
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use ratatui_image::protocol::StatefulProtocol;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{self, Interval};
@@ -17,14 +17,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::art_cache::ArtCache;
 use crate::config::Config;
-use crate::dispatch::Dispatcher;
 use crate::config::Hooks;
+use crate::config::TabAlignment;
+use crate::dispatch::Dispatcher;
 use crate::keys::{Action, KeyChord, Keymap, LeaderMap};
 use crate::queue::{Queue, QueuedItem, RepeatMode};
 use crate::source::local::LocalSource;
 use crate::term_probe::Term;
 use crate::theme::Theme;
-use crate::config::TabAlignment;
 use crate::types::{
     ArtSize, Category, DeviceEntry, Entry, EntryKind, Item, PlayState, SortAxis, SourceMode,
 };
@@ -571,11 +571,7 @@ impl App {
                 let d = &item.display;
                 let _ = tx.send(crate::mpris::MprisCommand::Metadata {
                     title: d.title.clone(),
-                    artists: d
-                        .artist
-                        .clone()
-                        .map(|a| vec![a])
-                        .unwrap_or_default(),
+                    artists: d.artist.clone().map(|a| vec![a]).unwrap_or_default(),
                     album: d.album.clone(),
                     duration_ms: d
                         .duration
@@ -631,16 +627,29 @@ impl App {
     /// usual auto-sort detection once `batch.finished == true` so disc /
     /// recently-added ordering still kicks in after the full set arrives.
     pub fn handle_row_batch(&mut self, batch: RowBatch) {
-        let RowBatch { view_id, batch, finished, is_extend } = batch;
-        let Some(state) = self.category_states.get_mut(&view_id.category) else { return };
+        let RowBatch {
+            view_id,
+            batch,
+            finished,
+            is_extend,
+        } = batch;
+        let Some(state) = self.category_states.get_mut(&view_id.category) else {
+            return;
+        };
         // Epoch guard: dropping batches from a previous descend in the same
         // category — covers both "user backed out and went elsewhere" and
         // "user backed out and re-descended (same URI or not)". The depth
         // check stays as a cheap pre-filter for the common case.
-        if state.stack.len() != view_id.depth { return }
-        if state.descend_epoch != view_id.epoch { return }
+        if state.stack.len() != view_id.depth {
+            return;
+        }
+        if state.descend_epoch != view_id.epoch {
+            return;
+        }
         let originating_uri = state.descend_uris.last().cloned().unwrap_or_default();
-        let Some(LibraryView::Entries { entries, .. }) = state.stack.last_mut() else { return };
+        let Some(LibraryView::Entries { entries, .. }) = state.stack.last_mut() else {
+            return;
+        };
         let mut extend_cursor: Option<usize> = None;
         match batch {
             Ok(rows) if !rows.is_empty() => {
@@ -683,9 +692,11 @@ impl App {
             // playlist URI → RecentlyAdded. The spotify-playlist override
             // exists because some playlists don't populate `added_at`, but
             // the desktop convention is still newest-first.
-            let has_track_no = entries.iter()
+            let has_track_no = entries
+                .iter()
                 .any(|e| e.display.as_ref().and_then(|d| d.track_no).is_some());
-            let has_hint = entries.iter()
+            let has_hint = entries
+                .iter()
                 .any(|e| e.display.as_ref().and_then(|d| d.sort_hint).is_some());
             let is_spotify_playlist = originating_uri.starts_with("spotify:playlist:");
             let auto_axis = if has_track_no {
@@ -702,7 +713,10 @@ impl App {
             // need TrackNumber regardless of what sort the parent root used.
             let is_root = view_id.depth == 1;
             let final_axis = if is_root {
-                state.sort.or(auto_axis).or_else(|| default_sort_for(view_id.category))
+                state
+                    .sort
+                    .or(auto_axis)
+                    .or_else(|| default_sort_for(view_id.category))
             } else {
                 auto_axis
             };
@@ -743,9 +757,9 @@ impl App {
             None => return std::borrow::Cow::Borrowed(&self.theme),
         };
         match SourceMode::from_scheme(scheme) {
-            Some(mode) if mode != self.active_source => std::borrow::Cow::Owned(
-                self.base_theme.clone().with_source_accent(mode),
-            ),
+            Some(mode) if mode != self.active_source => {
+                std::borrow::Cow::Owned(self.base_theme.clone().with_source_accent(mode))
+            }
             _ => std::borrow::Cow::Borrowed(&self.theme),
         }
     }
@@ -856,7 +870,11 @@ impl App {
         let cur = match cat {
             Category::Queue => self.queue_cursor,
             Category::Search => self.search_cursor,
-            _ => self.category_states.get(&cat).map(|s| s.cursor).unwrap_or(0),
+            _ => self
+                .category_states
+                .get(&cat)
+                .map(|s| s.cursor)
+                .unwrap_or(0),
         };
         (cur, len)
     }
@@ -900,9 +918,7 @@ impl App {
     /// the current tab.
     fn filtered_browse_len(&self) -> Option<usize> {
         self.current_filter()?;
-        self.filtered_browse_indices
-            .as_ref()
-            .map(|v| v.len())
+        self.filtered_browse_indices.as_ref().map(|v| v.len())
     }
 
     /// Resolve a filtered cursor (browse tab) to the original row index. The
@@ -1160,7 +1176,11 @@ impl App {
             Action::SeekRelative(secs) => self.seek_relative(secs).await,
             Action::ToggleShuffle => {
                 self.shuffle = !self.shuffle;
-                self.set_status(if self.shuffle { "shuffle on" } else { "shuffle off" });
+                self.set_status(if self.shuffle {
+                    "shuffle on"
+                } else {
+                    "shuffle off"
+                });
             }
             Action::CycleRepeat => {
                 self.repeat = self.repeat.cycle();
@@ -1176,7 +1196,10 @@ impl App {
                     self.set_status("sort: not a browse tab");
                 } else {
                     self.sort_modal_open = true;
-                    let cur = self.category_states.get(&self.active_category()).and_then(|s| s.sort);
+                    let cur = self
+                        .category_states
+                        .get(&self.active_category())
+                        .and_then(|s| s.sort);
                     self.sort_modal_sel = cur
                         .and_then(|a| SortAxis::all().iter().position(|x| *x == a))
                         .unwrap_or(0);
@@ -1326,8 +1349,7 @@ impl App {
             self.set_status("seek: no track duration available");
             return;
         };
-        let target_ms =
-            (dur.as_millis() as u64).saturating_mul(permille.min(1000) as u64) / 1000;
+        let target_ms = (dur.as_millis() as u64).saturating_mul(permille.min(1000) as u64) / 1000;
         let target = std::time::Duration::from_millis(target_ms);
         let Some(scheme) = self.dispatcher.active_scheme() else {
             return;
@@ -1509,10 +1531,7 @@ impl App {
     /// Returns `(scheme, label, uri)` for a browse category's root view —
     /// the shape `browse_streaming(uri)` needs. Mode-driven; mirrors the
     /// dispatch table the old `fetch_category_root` walked synchronously.
-    fn category_root_request(
-        &self,
-        cat: Category,
-    ) -> Result<(&'static str, String, String)> {
+    fn category_root_request(&self, cat: Category) -> Result<(&'static str, String, String)> {
         match cat {
             Category::Directories => Ok(("local", "Directories".into(), "local:dir:".into())),
             Category::Albums => match self.active_source {
@@ -1530,9 +1549,7 @@ impl App {
                 "spotify:view:followed_artists".into(),
             )),
             Category::Playlists => match self.active_source {
-                SourceMode::Local => {
-                    Ok(("local", "Playlists".into(), "local:playlists".into()))
-                }
+                SourceMode::Local => Ok(("local", "Playlists".into(), "local:playlists".into())),
                 SourceMode::Spotify => Ok((
                     "spotify",
                     "Playlists".into(),
@@ -1565,10 +1582,7 @@ impl App {
         let next = if self.thumb_cycle.is_empty() {
             self.term.mode.cycle()
         } else {
-            let cur_idx = self
-                .thumb_cycle
-                .iter()
-                .position(|m| *m == self.term.mode);
+            let cur_idx = self.thumb_cycle.iter().position(|m| *m == self.term.mode);
             match cur_idx {
                 Some(i) => self.thumb_cycle[(i + 1) % self.thumb_cycle.len()],
                 None => self.thumb_cycle[0],
@@ -1669,7 +1683,7 @@ impl App {
                 sort_hint: None,
                 track_no: None,
                 year_hint: None,
-                            },
+            },
         };
         self.queue.push(qi);
         self.set_status(format!("queued: {uri}"));
@@ -1697,7 +1711,7 @@ impl App {
                 sort_hint: None,
                 track_no: None,
                 year_hint: None,
-                            },
+            },
         };
         self.queue.push(qi.clone());
         let last = self.queue.len() - 1;
@@ -1767,7 +1781,7 @@ impl App {
                         sort_hint: None,
                         track_no: None,
                         year_hint: None,
-                                    }),
+                    }),
                 }),
                 _ => None,
             }),
@@ -1776,8 +1790,8 @@ impl App {
                 uri: it.uri.clone(),
                 display: it.display.clone(),
             }),
-            Some(LibraryView::Sections { sections, .. }) => {
-                sections_row_at(sections, cur).and_then(|hit| match hit {
+            Some(LibraryView::Sections { sections, .. }) => sections_row_at(sections, cur)
+                .and_then(|hit| match hit {
                     SectionHit::Header => None,
                     SectionHit::Entry { scheme, entry } => match entry.kind {
                         EntryKind::Track => Some(QueuedItem {
@@ -1793,12 +1807,11 @@ impl App {
                                 sort_hint: None,
                                 track_no: None,
                                 year_hint: None,
-                                            }),
+                            }),
                         }),
                         _ => None,
                     },
-                })
-            }
+                }),
             None => None,
         };
         if let Some(qi) = qi {
@@ -1897,14 +1910,13 @@ impl App {
         // Record the originating tab BEFORE switching, so back() can
         // return the user to the Search tab they descended from.
         let origin_tab_idx = self.active_tab_idx;
-        let switched_tabs =
-            if let Some(idx) = self.tabs.iter().position(|c| *c == target_cat) {
-                let crossed = idx != self.active_tab_idx;
-                self.active_tab_idx = idx;
-                crossed
-            } else {
-                false
-            };
+        let switched_tabs = if let Some(idx) = self.tabs.iter().position(|c| *c == target_cat) {
+            let crossed = idx != self.active_tab_idx;
+            self.active_tab_idx = idx;
+            crossed
+        } else {
+            false
+        };
         // Search → descend implies the user picked from the search list;
         // drop any in-page filter so the child view starts clean.
         self.filter_active.remove(&target_cat);
@@ -1912,8 +1924,11 @@ impl App {
         let s = self.category_states.entry(target_cat).or_default();
         s.parent_cursors.push((s.cursor, s.top));
         s.descend_uris.push(item.uri.clone());
-        s.origin_tabs
-            .push(if switched_tabs { Some(origin_tab_idx) } else { None });
+        s.origin_tabs.push(if switched_tabs {
+            Some(origin_tab_idx)
+        } else {
+            None
+        });
         s.stack.push(LibraryView::Entries {
             scheme,
             label: item.display.title.clone(),
@@ -2019,11 +2034,11 @@ impl App {
                     label: e.label.clone(),
                 },
             }),
-            Some(LibraryView::Tracks { items, .. }) => {
-                items.get(cur).map(|it| LibraryActivate::PlayItem { item: it.clone() })
-            }
-            Some(LibraryView::Sections { sections, .. }) => {
-                sections_row_at(sections, cur).and_then(|hit| match hit {
+            Some(LibraryView::Tracks { items, .. }) => items
+                .get(cur)
+                .map(|it| LibraryActivate::PlayItem { item: it.clone() }),
+            Some(LibraryView::Sections { sections, .. }) => sections_row_at(sections, cur)
+                .and_then(|hit| match hit {
                     SectionHit::Header => None,
                     SectionHit::Entry { scheme, entry } => Some(match entry.kind {
                         EntryKind::Track => LibraryActivate::PlayEntry {
@@ -2041,8 +2056,7 @@ impl App {
                             label: entry.label.clone(),
                         },
                     }),
-                })
-            }
+                }),
             None => None,
         };
 
@@ -2087,12 +2101,7 @@ impl App {
                 };
                 self.dirty = true;
                 if let Some(view_id) = view_id {
-                    spawn_browse_stream(
-                        src,
-                        uri.clone(),
-                        view_id,
-                        self.row_batch_tx.clone(),
-                    );
+                    spawn_browse_stream(src, uri.clone(), view_id, self.row_batch_tx.clone());
                 }
             }
             LibraryActivate::ExpandAlbum { label } => {
@@ -2160,38 +2169,35 @@ impl App {
     /// the offset within the view's track list after any filtering.
     async fn play_track_in_context(&mut self, selected_uri: &str) -> Result<()> {
         let cat = self.active_category();
-        let tracks: Vec<QueuedItem> = match self
-            .category_states
-            .get(&cat)
-            .and_then(|s| s.stack.last())
-        {
-            Some(LibraryView::Entries {
-                scheme, entries, ..
-            }) => entries
-                .iter()
-                .filter(|e| matches!(e.kind, EntryKind::Track))
-                .map(|e| entry_to_queued(scheme, e))
-                .collect(),
-            Some(LibraryView::Tracks { items, .. }) => items
-                .iter()
-                .map(|it| QueuedItem {
-                    source_scheme: "local",
-                    uri: it.uri.clone(),
-                    display: it.display.clone(),
-                })
-                .collect(),
-            Some(LibraryView::Sections { sections, .. }) => sections
-                .iter()
-                .flat_map(|sec| {
-                    let scheme = sec.scheme;
-                    sec.entries
-                        .iter()
-                        .filter(|e| matches!(e.kind, EntryKind::Track))
-                        .map(move |e| entry_to_queued(scheme, e))
-                })
-                .collect(),
-            None => Vec::new(),
-        };
+        let tracks: Vec<QueuedItem> =
+            match self.category_states.get(&cat).and_then(|s| s.stack.last()) {
+                Some(LibraryView::Entries {
+                    scheme, entries, ..
+                }) => entries
+                    .iter()
+                    .filter(|e| matches!(e.kind, EntryKind::Track))
+                    .map(|e| entry_to_queued(scheme, e))
+                    .collect(),
+                Some(LibraryView::Tracks { items, .. }) => items
+                    .iter()
+                    .map(|it| QueuedItem {
+                        source_scheme: "local",
+                        uri: it.uri.clone(),
+                        display: it.display.clone(),
+                    })
+                    .collect(),
+                Some(LibraryView::Sections { sections, .. }) => sections
+                    .iter()
+                    .flat_map(|sec| {
+                        let scheme = sec.scheme;
+                        sec.entries
+                            .iter()
+                            .filter(|e| matches!(e.kind, EntryKind::Track))
+                            .map(move |e| entry_to_queued(scheme, e))
+                    })
+                    .collect(),
+                None => Vec::new(),
+            };
         if tracks.is_empty() {
             return Ok(());
         }
@@ -2304,7 +2310,9 @@ impl App {
         let target_uri = cur.uri.as_str();
         let target_scheme = cur.source_scheme;
         let idx: Option<usize> = match view {
-            LibraryView::Entries { scheme, entries, .. } => {
+            LibraryView::Entries {
+                scheme, entries, ..
+            } => {
                 if *scheme == target_scheme {
                     entries.iter().position(|e| e.uri == target_uri)
                 } else {
@@ -2439,8 +2447,7 @@ impl App {
         else {
             return;
         };
-        let pollable =
-            path == "spotify:view:saved_tracks" || path.starts_with("spotify:playlist:");
+        let pollable = path == "spotify:view:saved_tracks" || path.starts_with("spotify:playlist:");
         if !pollable {
             return;
         }
@@ -2509,16 +2516,8 @@ impl App {
         // Resolve target URI + source scheme. Hovered wins.
         let (uri, scheme, is_current_track): (String, String, bool) =
             if let Some(uri) = self.hovered_uri() {
-                let scheme = uri
-                    .split(':')
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
-                let is_current = self
-                    .queue
-                    .current()
-                    .map(|c| c.uri == uri)
-                    .unwrap_or(false);
+                let scheme = uri.split(':').next().unwrap_or("").to_string();
+                let is_current = self.queue.current().map(|c| c.uri == uri).unwrap_or(false);
                 (uri, scheme, is_current)
             } else if let Some(cur) = self.queue.current().cloned() {
                 (cur.uri, cur.source_scheme.to_string(), true)
@@ -2635,7 +2634,9 @@ impl App {
             _ => {
                 let cat = self.active_category();
                 let s = self.category_states.get(&cat)?;
-                let cur = self.filtered_browse_cursor_to_orig(s.cursor).unwrap_or(s.cursor);
+                let cur = self
+                    .filtered_browse_cursor_to_orig(s.cursor)
+                    .unwrap_or(s.cursor);
                 match s.stack.last()? {
                     LibraryView::Entries { entries, .. } => Some(entries.get(cur)?.kind.clone()),
                     LibraryView::Tracks { .. } => Some(EntryKind::Track),
@@ -2674,14 +2675,12 @@ impl App {
             _ => {
                 let cat = self.active_category();
                 let s = self.category_states.get(&cat)?;
-                let cur = self.filtered_browse_cursor_to_orig(s.cursor).unwrap_or(s.cursor);
+                let cur = self
+                    .filtered_browse_cursor_to_orig(s.cursor)
+                    .unwrap_or(s.cursor);
                 match s.stack.last()? {
-                    LibraryView::Entries { entries, .. } => {
-                        Some(entries.get(cur)?.uri.clone())
-                    }
-                    LibraryView::Tracks { items, .. } => {
-                        Some(items.get(cur)?.uri.clone())
-                    }
+                    LibraryView::Entries { entries, .. } => Some(entries.get(cur)?.uri.clone()),
+                    LibraryView::Tracks { items, .. } => Some(items.get(cur)?.uri.clone()),
                     LibraryView::Sections { sections, .. } => {
                         let hit = sections_row_at(sections, cur)?;
                         if let SectionHit::Entry { entry, .. } = hit {
@@ -3032,7 +3031,10 @@ impl App {
             self.set_status("song radio: Spotify source not enabled");
             return;
         };
-        let path = format!("spotify:radio:track:{}", uri.trim_start_matches("spotify:track:"));
+        let path = format!(
+            "spotify:radio:track:{}",
+            uri.trim_start_matches("spotify:track:")
+        );
         let entries = match src.browse(&path).await {
             Ok(v) => v,
             Err(e) => {
@@ -3123,8 +3125,11 @@ impl App {
             .entry(crate::types::Category::Spotify)
             .or_default();
         s.parent_cursors.push((s.cursor, s.top));
-        s.origin_tabs
-            .push(if switched_tabs { Some(origin_tab_idx) } else { None });
+        s.origin_tabs.push(if switched_tabs {
+            Some(origin_tab_idx)
+        } else {
+            None
+        });
         s.stack.push(LibraryView::Entries {
             scheme: "spotify",
             label: format!("{kind}: {rel_uri}"),
@@ -3191,9 +3196,13 @@ impl App {
             _ => {
                 let cat = self.active_category();
                 let s = self.category_states.get(&cat)?;
-                let cur = self.filtered_browse_cursor_to_orig(s.cursor).unwrap_or(s.cursor);
+                let cur = self
+                    .filtered_browse_cursor_to_orig(s.cursor)
+                    .unwrap_or(s.cursor);
                 match s.stack.last()? {
-                    LibraryView::Entries { scheme, entries, .. } => {
+                    LibraryView::Entries {
+                        scheme, entries, ..
+                    } => {
                         let e = entries.get(cur)?;
                         let d = e.display.as_ref()?;
                         let uri = d.art_uri_full.clone().or_else(|| d.art_uri.clone())?;
@@ -3201,7 +3210,11 @@ impl App {
                     }
                     LibraryView::Tracks { items, .. } => {
                         let it = items.get(cur)?;
-                        let uri = it.display.art_uri_full.clone().or_else(|| it.display.art_uri.clone())?;
+                        let uri = it
+                            .display
+                            .art_uri_full
+                            .clone()
+                            .or_else(|| it.display.art_uri.clone())?;
                         Some((uri, "local"))
                     }
                     LibraryView::Sections { sections, .. } => {
@@ -3235,7 +3248,9 @@ impl App {
         let key = uri.clone();
         tokio::spawn(async move {
             let _ = cache
-                .get(&key, || async { src.art(&key, crate::types::ArtSize::Full).await })
+                .get(&key, || async {
+                    src.art(&key, crate::types::ArtSize::Full).await
+                })
                 .await;
             let _ = wake.send(());
         });
@@ -3552,7 +3567,10 @@ impl App {
         // Window title: `<title> — <artist>` capped at 60 chars so tmux /
         // kitty embedded multiplexers don't truncate ugly. Set on every
         // track change.
-        set_window_title(&format_window_title(&cur.display.title, cur.display.artist.as_deref()));
+        set_window_title(&format_window_title(
+            &cur.display.title,
+            cur.display.artist.as_deref(),
+        ));
         // Don't auto-reset art_collapsed on track change — preference now
         // persists across runs, and users on small terminals want it to
         // stay collapsed.
@@ -3592,8 +3610,8 @@ impl App {
             let key = art_uri.clone();
             cache
                 .get(&key, || async {
-                    let src = src_opt
-                        .ok_or_else(|| anyhow::anyhow!("no source for scheme: {scheme}"))?;
+                    let src =
+                        src_opt.ok_or_else(|| anyhow::anyhow!("no source for scheme: {scheme}"))?;
                     src.art(&key, ArtSize::Full).await
                 })
                 .await
@@ -3784,8 +3802,7 @@ impl App {
                 if let Some(bar) = self.progress_bar_rect {
                     if rect_contains(&bar, x, y) && bar.width > 0 {
                         let offset = x.saturating_sub(bar.x) as u32;
-                        let permille =
-                            ((offset * 1000) / bar.width as u32).min(1000) as u16;
+                        let permille = ((offset * 1000) / bar.width as u32).min(1000) as u16;
                         return Action::SeekToPermille(permille);
                     }
                 }
@@ -3910,8 +3927,12 @@ enum LibraryActivate {
         scheme: &'static str,
         uri: String,
     },
-    PlayEntry { entry: Entry },
-    PlayItem { item: Item },
+    PlayEntry {
+        entry: Entry,
+    },
+    PlayItem {
+        item: Item,
+    },
 }
 
 /// Result of resolving a flattened row index inside a `LibraryView::Sections`.
@@ -3942,7 +3963,7 @@ fn entry_to_queued(scheme: &'static str, e: &Entry) -> QueuedItem {
             sort_hint: None,
             track_no: None,
             year_hint: None,
-                        }),
+        }),
     }
 }
 
@@ -3981,15 +4002,19 @@ fn spawn_browse_stream(
     const MIN_VISIBLE_MS: u64 = 600;
     tokio::spawn(async move {
         let started = std::time::Instant::now();
-        let (batch_tx, mut batch_rx) =
-            tokio::sync::mpsc::channel::<Result<Vec<Entry>>>(16);
+        let (batch_tx, mut batch_rx) = tokio::sync::mpsc::channel::<Result<Vec<Entry>>>(16);
         let stream_fut = async move {
             src.browse_streaming(&uri, batch_tx).await;
         };
         let forward_fut = async {
             while let Some(batch) = batch_rx.recv().await {
                 if row_tx
-                    .send(RowBatch { view_id, batch, finished: false, is_extend: false })
+                    .send(RowBatch {
+                        view_id,
+                        batch,
+                        finished: false,
+                        is_extend: false,
+                    })
                     .is_err()
                 {
                     return;
@@ -4128,10 +4153,7 @@ fn sort_library_view(view: &mut LibraryView, axis: SortAxis) {
             .unwrap_or(u64::MAX)
     }
     fn item_key_dur(it: &Item) -> u64 {
-        it.display
-            .duration
-            .map(|d| d.as_secs())
-            .unwrap_or(u64::MAX)
+        it.display.duration.map(|d| d.as_secs()).unwrap_or(u64::MAX)
     }
     // Newest first: sort by `-sort_hint` so larger timestamps land at top.
     // Rows without a hint group together and preserve source order via

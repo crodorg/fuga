@@ -7,7 +7,10 @@ use crate::queue::QueuedItem;
 /// chatty hook doesn't corrupt the TUI. Errors only surface in the log.
 fn spawn(cmd: &str, env: &[(&str, String)]) {
     let cmd = cmd.to_string();
-    let env: Vec<(String, String)> = env.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+    let env: Vec<(String, String)> = env
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.clone()))
+        .collect();
     tokio::spawn(async move {
         let mut child = match tokio::process::Command::new("sh")
             .arg("-c")
@@ -46,10 +49,7 @@ pub fn on_track_change(hooks: &Hooks, item: &QueuedItem) {
                 "FUGA_ARTIST",
                 item.display.artist.clone().unwrap_or_default(),
             ),
-            (
-                "FUGA_ALBUM",
-                item.display.album.clone().unwrap_or_default(),
-            ),
+            ("FUGA_ALBUM", item.display.album.clone().unwrap_or_default()),
         ];
         spawn(cmd, &env);
     }

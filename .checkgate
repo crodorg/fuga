@@ -1,0 +1,3 @@
+Opt-in marker for the global git pre-commit / pre-push gate (~/.config/git/hooks).
+Presence => the hooks run `make check-fast` (commit) and `make check-cov` (push) here.
+Remove to disable. Installed by ~/.claude/gate/install.sh. See Makefile + ~/.claude/gate/README.md.

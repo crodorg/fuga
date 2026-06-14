@@ -3,15 +3,15 @@
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use mpd_client::{client::Client, commands};
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
+use crate::source::MusicSource;
 use crate::source::mpd_shared::{mpd_set_volume, mpd_status};
 use crate::source::radio::resolve_playlist;
-use crate::source::MusicSource;
 use crate::types::{ArtSize, Entry, EntryKind, Item, ItemDisplay, Playable, PlaybackStatus};
 
 const CHANNELS_URL: &str = "https://api.somafm.com/channels.json";
@@ -168,7 +168,7 @@ fn channel_to_item(c: &Channel) -> Item {
             sort_hint: None,
             track_no: None,
             year_hint: None,
-                        },
+        },
     }
 }
 

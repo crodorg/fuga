@@ -8,7 +8,7 @@
 //! Track hydration also goes through mercury here because rspotify's batch
 //! `tracks(ids)` and `artists(ids)` endpoints are themselves deprecated.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use futures::future::{join_all, try_join_all};
 use librespot::core::Session;
 use librespot::core::SpotifyUri;
@@ -59,8 +59,8 @@ fn parse_artist_uri(id_or_uri: &str) -> Result<SpotifyUri> {
     let base62 = id_or_uri
         .strip_prefix("spotify:artist:")
         .unwrap_or(id_or_uri);
-    let id = SpotifyId::from_base62(base62)
-        .map_err(|e| anyhow!("parse artist id `{base62}`: {e}"))?;
+    let id =
+        SpotifyId::from_base62(base62).map_err(|e| anyhow!("parse artist id `{base62}`: {e}"))?;
     Ok(SpotifyUri::Artist { id })
 }
 
@@ -128,10 +128,7 @@ pub async fn artist_top_tracks(session: &Session, artist_id: &str) -> Result<Vec
 /// non-allowlisted dev apps). Mirrors what the desktop client does — same
 /// path the player itself uses, so it works as long as the librespot session
 /// is alive.
-pub async fn artist_albums(
-    session: &Session,
-    artist_id: &str,
-) -> Result<Vec<ArtistAlbum>> {
+pub async fn artist_albums(session: &Session, artist_id: &str) -> Result<Vec<ArtistAlbum>> {
     let uri = parse_artist_uri(artist_id)?;
     let artist = Artist::get(session, &uri)
         .await
@@ -182,9 +179,7 @@ pub async fn song_radio(
     track_id: &str,
     count: usize,
 ) -> Result<Vec<ArtistTrack>> {
-    let base62 = track_id
-        .strip_prefix("spotify:track:")
-        .unwrap_or(track_id);
+    let base62 = track_id.strip_prefix("spotify:track:").unwrap_or(track_id);
     let track_uri = format!("spotify:track:{base62}");
     let bytes = session
         .spclient()
@@ -202,8 +197,7 @@ pub async fn song_radio(
         track_uri: Option<String>,
         uri: Option<String>,
     }
-    let resp: StationResp = serde_json::from_slice(&bytes)
-        .context("apollo-station JSON decode")?;
+    let resp: StationResp = serde_json::from_slice(&bytes).context("apollo-station JSON decode")?;
     let seed_uri = format!("spotify:track:{base62}");
     let track_uris: Vec<SpotifyUri> = resp
         .tracks
@@ -262,8 +256,8 @@ pub async fn playlist_track_uris(
     let base62 = playlist_id
         .strip_prefix("spotify:playlist:")
         .unwrap_or(playlist_id);
-    let _ = SpotifyId::from_base62(base62)
-        .map_err(|e| anyhow!("parse playlist id `{base62}`: {e}"))?;
+    let _ =
+        SpotifyId::from_base62(base62).map_err(|e| anyhow!("parse playlist id `{base62}`: {e}"))?;
 
     // librespot's `Playlist::get` hits `/playlist/v2/playlist/{id}` with no
     // query params, which Spotify silently caps at ~300 items. Walk the
@@ -295,9 +289,7 @@ pub async fn playlist_track_uris(
                 Err(e) if attempt < 3 => {
                     let msg = e.to_string();
                     if msg.contains("500") || msg.contains("502") || msg.contains("503") {
-                        let backoff = std::time::Duration::from_millis(
-                            300u64 * (1u64 << attempt),
-                        );
+                        let backoff = std::time::Duration::from_millis(300u64 * (1u64 << attempt));
                         tracing::warn!(
                             attempt,
                             backoff_ms = backoff.as_millis() as u64,
@@ -307,9 +299,7 @@ pub async fn playlist_track_uris(
                         attempt += 1;
                         continue;
                     }
-                    return Err(e).with_context(|| {
-                        format!("mercury playlist fetch from={from}")
-                    });
+                    return Err(e).with_context(|| format!("mercury playlist fetch from={from}"));
                 }
                 Err(e) => {
                     return Err(e).with_context(|| {
@@ -318,8 +308,8 @@ pub async fn playlist_track_uris(
                 }
             }
         };
-        let msg = SelectedListContent::parse_from_bytes(&bytes)
-            .context("mercury playlist parse")?;
+        let msg =
+            SelectedListContent::parse_from_bytes(&bytes).context("mercury playlist parse")?;
         if revision_hex.is_empty() {
             let rev = msg.revision();
             if !rev.is_empty() {
@@ -355,7 +345,9 @@ pub async fn playlist_track_uris(
     let raw: Vec<(String, i64)> = all_items
         .iter()
         .filter_map(|it| {
-            let SpotifyUri::Track { .. } = it.id else { return None };
+            let SpotifyUri::Track { .. } = it.id else {
+                return None;
+            };
             let base62 = uri_to_base62(&it.id)?;
             let ts_sec = it.attributes.timestamp.as_timestamp_ms() / 1000;
             Some((format!("spotify:track:{base62}"), ts_sec))
@@ -374,7 +366,11 @@ pub async fn playlist_track_uris(
         .into_iter()
         .enumerate()
         .map(|(pos, (uri, ts))| {
-            let hint = if use_position || ts <= 0 { (pos + 1) as i64 } else { ts };
+            let hint = if use_position || ts <= 0 {
+                (pos + 1) as i64
+            } else {
+                ts
+            };
             (uri, hint)
         })
         .collect();
@@ -385,10 +381,7 @@ pub async fn playlist_track_uris(
 /// concurrency + retry pass for the failures — keeps the dealer's
 /// rate-limiter from silently dropping requests. Failures fall through to
 /// a `None` so callers can render a placeholder rather than truncating.
-pub async fn hydrate_tracks(
-    session: &Session,
-    uris: &[String],
-) -> Vec<Option<ArtistTrack>> {
+pub async fn hydrate_tracks(session: &Session, uris: &[String]) -> Vec<Option<ArtistTrack>> {
     let parsed: Vec<SpotifyUri> = uris
         .iter()
         .filter_map(|u| {
@@ -509,17 +502,15 @@ pub async fn hydrate_tracks(
 /// contains folder markers (`spotify:start-group:...` /
 /// `spotify:end-group:...`) and other non-playlist URIs that the typed
 /// wrapper rejects with "ID cannot be parsed", failing the whole walk.
-pub async fn find_user_playlist_id_by_name(
-    session: &Session,
-    name: &str,
-) -> Result<String> {
+pub async fn find_user_playlist_id_by_name(session: &Session, name: &str) -> Result<String> {
     let bytes = session
         .spclient()
         .get_rootlist(0, Some(1000))
         .await
         .map_err(|e| anyhow!("mercury rootlist: {e}"))?;
-    let msg = librespot::protocol::playlist4_external::SelectedListContent::parse_from_bytes(&bytes)
-        .context("rootlist protobuf decode")?;
+    let msg =
+        librespot::protocol::playlist4_external::SelectedListContent::parse_from_bytes(&bytes)
+            .context("rootlist protobuf decode")?;
     // Collect every playlist URI from the rootlist. `items` includes folder
     // markers and `meta_items` doesn't, so they DON'T share an index —
     // hydrate each playlist via mercury `Playlist::get` and check its name.
@@ -548,14 +539,10 @@ pub async fn find_user_playlist_id_by_name(
             let SpotifyUri::Playlist { id, .. } = uri else {
                 continue;
             };
-            return id
-                .to_base62()
-                .map_err(|e| anyhow!("base62 encode: {e}"));
+            return id.to_base62().map_err(|e| anyhow!("base62 encode: {e}"));
         }
     }
-    tracing::warn!(
-        "playlist `{name}` not in rootlist. Rootlist names: {found_names:?}"
-    );
+    tracing::warn!("playlist `{name}` not in rootlist. Rootlist names: {found_names:?}");
     Err(anyhow!(
         "playlist `{name}` not in your library — open the Spotify app once to follow it (rootlist had {} playlists; see the fuga log for names)",
         found_names.len()

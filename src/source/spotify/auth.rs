@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use rspotify::clients::OAuthClient;
-use rspotify::{prelude::BaseClient, scopes, AuthCodePkceSpotify, Config, Credentials, OAuth};
+use rspotify::{AuthCodePkceSpotify, Config, Credentials, OAuth, prelude::BaseClient, scopes};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use url::Url;

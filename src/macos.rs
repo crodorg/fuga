@@ -21,9 +21,9 @@
 
 use crate::mpris::MprisEvent;
 use block2::RcBlock;
+use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::{NSDictionary, NSString};
 use objc2_media_player::{
@@ -63,9 +63,10 @@ pub fn run_main_loop(tx: UnboundedSender<MprisEvent>) {
 
     // Announce ourselves as an active player. Without this macOS doesn't
     // pick a "now playing" app and the remote commands above never fire,
-    // even with handlers attached. Real metadata will overwrite this once
-    // a track starts (TODO: plumb MprisCommand::Metadata back here); for
-    // now a placeholder title is enough for the system to route events.
+    // even with handlers attached. For now a placeholder title is enough
+    // for the system to route events; plumbing MprisCommand::Metadata into
+    // MPNowPlayingInfoCenter so real track metadata replaces the placeholder
+    // is a tracked v0.3.x candidate (plan.md).
     unsafe { announce_player() };
 
     // Blocks until the process exits. The async worker calls

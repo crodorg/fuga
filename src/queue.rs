@@ -68,11 +68,9 @@ impl Queue {
     /// not between current and first. When nothing is playing, the item lands
     /// at the end of the manual prefix.
     pub fn push_manual(&mut self, item: QueuedItem) {
-        let pos = self.next_manual_pos.unwrap_or_else(|| {
-            self.current
-                .map(|c| c + 1)
-                .unwrap_or(self.manual_count)
-        });
+        let pos = self
+            .next_manual_pos
+            .unwrap_or_else(|| self.current.map(|c| c + 1).unwrap_or(self.manual_count));
         let pos = pos.min(self.items.len());
         self.items.insert(pos, item);
         // Bump `current` if the insert pushed it down.
@@ -90,11 +88,7 @@ impl Queue {
     /// Replace the auto-queue (everything past `manual_count`) with `items`.
     /// `current_offset_in_items` selects which one becomes current — the new
     /// `current` index will be `manual_count + current_offset_in_items`.
-    pub fn replace_auto(
-        &mut self,
-        items: Vec<QueuedItem>,
-        current_offset_in_items: usize,
-    ) {
+    pub fn replace_auto(&mut self, items: Vec<QueuedItem>, current_offset_in_items: usize) {
         self.items.truncate(self.manual_count);
         let chosen = self.manual_count + current_offset_in_items.min(items.len().saturating_sub(1));
         self.items.extend(items);
@@ -144,11 +138,7 @@ impl Queue {
     /// other index; `repeat = Track` stays on current; `repeat = All` wraps
     /// around to 0 at the end; `repeat = Off` falls off the end (returns
     /// None).
-    pub fn advance_with(
-        &mut self,
-        shuffle: bool,
-        repeat: RepeatMode,
-    ) -> Option<&QueuedItem> {
+    pub fn advance_with(&mut self, shuffle: bool, repeat: RepeatMode) -> Option<&QueuedItem> {
         if self.items.is_empty() {
             return None;
         }
@@ -247,7 +237,7 @@ mod tests {
                 sort_hint: None,
                 track_no: None,
                 year_hint: None,
-                            },
+            },
         }
     }
 
@@ -289,8 +279,8 @@ mod tests {
         q.push_manual(item("a"));
         q.push_manual(item("b"));
         assert_eq!(q.items[5].uri, "t5"); // current
-        assert_eq!(q.items[6].uri, "a");  // first queued
-        assert_eq!(q.items[7].uri, "b");  // second queued — AFTER a, not between t5 and a
+        assert_eq!(q.items[6].uri, "a"); // first queued
+        assert_eq!(q.items[7].uri, "b"); // second queued — AFTER a, not between t5 and a
         assert_eq!(q.items[8].uri, "t6");
     }
 
@@ -298,9 +288,9 @@ mod tests {
     fn advance_resets_manual_cursor() {
         let mut q = auto_queue(10);
         q.set_current(5);
-        q.push_manual(item("a"));    // at idx 6
-        let _ = q.advance();         // now playing idx 6 = "a"
-        q.push_manual(item("b"));    // should land at idx 7, after current ("a")
+        q.push_manual(item("a")); // at idx 6
+        let _ = q.advance(); // now playing idx 6 = "a"
+        q.push_manual(item("b")); // should land at idx 7, after current ("a")
         assert_eq!(q.current, Some(6));
         assert_eq!(q.items[6].uri, "a");
         assert_eq!(q.items[7].uri, "b");

@@ -67,7 +67,9 @@ impl Theme {
         Style::default().fg(self.border)
     }
     pub fn accent(&self) -> Style {
-        Style::default().fg(self.accent).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(self.accent)
+            .add_modifier(Modifier::BOLD)
     }
     pub fn selection(&self) -> Style {
         Style::default()
@@ -83,7 +85,9 @@ impl Theme {
         Style::default().fg(self.dim)
     }
     pub fn header(&self) -> Style {
-        Style::default().fg(self.header).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(self.header)
+            .add_modifier(Modifier::BOLD)
     }
     pub fn progress(&self) -> Style {
         Style::default().fg(self.progress)
@@ -92,7 +96,9 @@ impl Theme {
         Style::default().fg(self.progress_track)
     }
     pub fn volume(&self) -> Style {
-        Style::default().fg(self.volume).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(self.volume)
+            .add_modifier(Modifier::BOLD)
     }
     pub fn error(&self) -> Style {
         Style::default().fg(self.error)

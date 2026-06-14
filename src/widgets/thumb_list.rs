@@ -3,12 +3,12 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::text::Line;
 use ratatui::widgets::{
     Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
-use ratatui::Frame;
 use std::time::Duration;
 
 use crate::theme::Theme;
@@ -103,7 +103,6 @@ impl ThumbRowSpec {
             row_h_override: None,
         }
     }
-
 }
 
 pub struct ThumbListCtx<'a> {
@@ -193,7 +192,13 @@ pub fn render_thumb_list(
     let reserve_thumb_column = !thumbs_off && any_art;
 
     // How many rows fit starting from `top`?
-    fn visible_count(rows: &[ThumbRowSpec], top: usize, max_h: u16, big_h: u16, thumbs_off: bool) -> usize {
+    fn visible_count(
+        rows: &[ThumbRowSpec],
+        top: usize,
+        max_h: u16,
+        big_h: u16,
+        thumbs_off: bool,
+    ) -> usize {
         let mut h = 0u16;
         let mut count = 0;
         for spec in rows.iter().skip(top) {
@@ -288,10 +293,7 @@ pub fn render_thumb_list(
                 .split(row_rect);
             // Only render thumb if this row has art; otherwise leave the
             // column blank but still aligned with neighbours.
-            (
-                if row_has_thumb { Some(split[0]) } else { None },
-                split[2],
-            )
+            (if row_has_thumb { Some(split[0]) } else { None }, split[2])
         } else {
             (None, row_rect)
         };
@@ -318,8 +320,8 @@ pub fn render_thumb_list(
                 // cell rect would otherwise render at its native size,
                 // leaving whitespace right/below. Lanczos3 keeps small
                 // thumbs from looking blocky when upscaled.
-                let img = StatefulImage::default()
-                    .resize(Resize::Scale(Some(FilterType::Lanczos3)));
+                let img =
+                    StatefulImage::default().resize(Resize::Scale(Some(FilterType::Lanczos3)));
                 f.render_stateful_widget(img, thumb_rect, p);
             } else {
                 let placeholder = Paragraph::new("..").style(ctx.theme.dim());
