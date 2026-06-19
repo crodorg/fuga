@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust 2024](https://img.shields.io/badge/edition-2024-dea584.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey.svg)](#)
-[![Status](https://img.shields.io/badge/status-v0.3.1-orange.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-v0.3.2-orange.svg)](CHANGELOG.md)
 
 Terminal-native music library aggregator. One TUI, one queue, many sources:
 local files (via MPD), internet radio, SomaFM, Spotify, YouTube. Inline
@@ -195,6 +195,7 @@ PulseAudio or PipeWire (both expose a `pulse` device that mixes for you).
 | `m`                  | Open contextual action menu                    |
 | `P`                  | Pin / unpin hovered item                       |
 | `v`                  | Expand hovered album art                       |
+| `e`                  | Resize now-playing art panel (big / small)     |
 | `B`                  | Toggle synced-lyrics view                      |
 | `Y`                  | Download hovered track (YouTube)               |
 

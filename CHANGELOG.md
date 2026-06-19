@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] — 2026-06-19
+
+### Added
+
+- **`e` toggles the now-playing art size** — collapse the album-art panel
+  into the bottom bar, or expand it back to full size, straight from the
+  keyboard. Previously this was only reachable by clicking the panel.
+
+### Fixed
+
+- **Expanding the art panel left it blank** — after collapsing the
+  now-playing cover and expanding it again, the full-size image failed to
+  repaint until the next track changed. The panel now rebuilds its image
+  protocol on each toggle, so the cover always reappears.
+
 ## [0.3.1] — 2026-06-19
 
 ### Fixed
