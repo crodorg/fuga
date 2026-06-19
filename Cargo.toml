@@ -53,6 +53,10 @@ url = "2.5.8"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 open = "5.3"
 
+# Raw-TTY termios + timed reads for the in-tmux kitty self-probe (term_probe.rs).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = { version = "0.10", features = ["tokio"] }
 
