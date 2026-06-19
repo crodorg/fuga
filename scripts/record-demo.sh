@@ -140,25 +140,33 @@ FFMPEG_PID=$!
     xdotool key Return
     sleep 3.0
 
-    # --- 5. Synced lyrics: open, then linger while they load and scroll ---
+    # --- 5. Resize the now-playing art panel (e): collapse it into the
+    #        bottom bar, then expand back to full size. The expand-back is
+    #        the path that used to render blank — now it repaints. ---
+    xdotool key e
+    sleep 2.0          # collapsed: art shrinks into the bottom bar
+    xdotool key e
+    sleep 2.5          # expanded: full-size cover repaints
+
+    # --- 6. Synced lyrics: open, then linger while they load and scroll ---
     xdotool key B
     sleep 13.0         # lyrics are slow to load; linger long enough to read them
     xdotool key Escape
     sleep 0.6
 
-    # --- 6. Expand album art to fill the screen (v, lowercase) ---
+    # --- 7. Expand album art to fill the screen (v, lowercase) ---
     xdotool key v
     sleep 4.0
     xdotool key v               # toggle back
     sleep 0.6
 
-    # --- 7. Spotify Connect device picker (d) ---
+    # --- 8. Spotify Connect device picker (d) ---
     xdotool key d
     sleep 2.2
     xdotool key Escape
     sleep 0.6
 
-    # --- 8. Toggle inline thumbnails off, then on (T) ---
+    # --- 9. Toggle inline thumbnails off, then on (T) ---
     xdotool key T
     sleep 2.0
     xdotool key T
