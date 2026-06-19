@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-06-19
+
+### Fixed
+
+- **Album art under tmux** — inline Kitty thumbnails and the now-playing
+  image no longer fall back to half-blocks, and no longer break after
+  switching tmux windows. The pane's `allow-passthrough` is now held at
+  `all` after terminal probing so art survives window switches, and Kitty
+  support is detected reliably even when several clients are attached to the
+  same tmux session — previously a non-Kitty client could win the
+  capability-query response race and mask the real terminal's reply.
+
+### Changed
+
+- Migrated to the Rust 2024 edition. No behavior change.
+
 ## [0.2.1] — 2026-05-30
 
 ### Added
