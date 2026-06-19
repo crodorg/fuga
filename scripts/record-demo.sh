@@ -5,7 +5,7 @@
 # driver feeds keystrokes via xdotool while ffmpeg screen-captures the
 # terminal window, then converts to optimized GIF.
 #
-# Output: docs/demo.gif (~15s, target <5MB)
+# Output: docs/demo.gif (~35s, target <5MB)
 #
 # Deps: fuga (on PATH or built), xdotool, ffmpeg, awk
 # X11 only. Must be run from inside the terminal you want recorded
@@ -22,7 +22,7 @@ FPS_OUT=18
 # SCALE_W=0 means output at native capture resolution (sharper text).
 # Set to a positive width (e.g. 1000) to downscale.
 SCALE_W=0
-DURATION_S=44
+DURATION_S=55
 FUGA_BIN="${FUGA_BIN:-fuga}"
 OUT_MP4="$REPO_ROOT/docs/demo.mp4"
 OUT_GIF="$REPO_ROOT/docs/demo.gif"
@@ -60,6 +60,16 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# ---- focus the recorded window ----
+# A backgrounded launch (spawned from another terminal) often opens unfocused,
+# so the keystroke driver's events would land in the wrong window. Grab focus
+# and park the pointer over the window (covers focus-follows-mouse WMs like
+# dwm). Window *size* is left to the WM/terminal — under a tiling WM, resize
+# the tile (or go fullscreen/monocle) before recording for a larger capture.
+xdotool windowactivate --sync "$WIN_ID" 2>/dev/null || true
+xdotool mousemove --window "$WIN_ID" 20 20 2>/dev/null || true
+sleep 0.4
+
 # ---- window geometry ----
 eval "$(xdotool getwindowgeometry --shell "$WIN_ID")"
 # Inset by st's 2px internal border so the recording is content-only.
@@ -85,93 +95,87 @@ FFMPEG_PID=$!
 # Sends to whatever window is focused; relies on the script invoker keeping
 # the recorded window focused (it will be, since fuga runs in foreground here).
 (
-    sleep 2.5   # wait for fuga splash / MPD connect / Spotify session
+    sleep 3.0   # wait for fuga splash / MPD connect / Spotify session + browse fetch
 
-    # Mode switch keybind: 't' cycles through sources.
-    # Assumed cycle order: Local -> Spotify -> YouTube -> SomaFM -> Radio -> wrap.
-    # If real order differs, adjust 't' counts below.
+    # `t` (cycle_source) steps through *registered* sources only, in canonical
+    # order Local -> Spotify -> YouTube -> SomaFM -> Radio -> wrap. We don't
+    # count presses to land anywhere: after a quick spin we jump straight to
+    # Spotify with the `g`+`s` leader (source_jump:spotify), which is exact no
+    # matter how many sources are registered.
 
-    # --- 1. Local (default) ---
-    xdotool key --delay 150 j
-    xdotool key --delay 150 j
-    xdotool key --delay 150 j
-    xdotool key --delay 150 j
-    sleep 1.2
+    # --- 1. Quick source spin: flip the ring so each source flashes by ---
+    sleep 1.0                       # linger on the default source at launch
+    xdotool key t; sleep 0.9        # -> next source
+    xdotool key t; sleep 0.9
+    xdotool key t; sleep 0.9
+    xdotool key t; sleep 0.9
+    xdotool key t; sleep 0.9        # 5 presses covers the full ring (max 5)
 
-    # --- 2. Spotify ---
-    xdotool key t
-    sleep 1.2
-    xdotool key --delay 150 j
-    xdotool key --delay 150 j
-    xdotool key --delay 150 j
+    # --- 2. Land on Spotify for the showcase (deterministic) ---
+    xdotool key g; sleep 0.15; xdotool key s
+    sleep 2.0                       # Spotify landing page loads, thumbs per row
+
+    # Spotify landing page sections: Discover Weekly / Liked Songs / Recently
+    # Played / Top Tracks / Top Artists — every row carries an album-art thumb.
+    xdotool key --delay 220 j
+    xdotool key --delay 220 j
+    xdotool key --delay 220 j
     sleep 1.0
-
-    # --- 3. YouTube ---
-    xdotool key t
-    sleep 1.2
-    xdotool key --delay 150 j
-    xdotool key --delay 150 j
-    sleep 1.0
-
-    # --- 4. SomaFM ---
-    xdotool key t
-    sleep 1.2
-    xdotool key --delay 150 j
-    xdotool key --delay 150 j
-    xdotool key --delay 150 j
-    sleep 1.2
-
-    # --- 5. Back to Spotify (ring is 4 sources, wraps SomaFM -> Local) ---
-    xdotool key t          # SomaFM -> Local
-    sleep 0.6
-    xdotool key t          # Local -> Spotify
-    sleep 1.2
-
-    # --- 6. Spotify: jump to Followed Artists ---
-    # Spotify sub-view shortcut: `g` then letter (gs=saved, gp=playlists, ga=artists).
-    xdotool key g; sleep 0.15; xdotool key a
-    sleep 1.8
-
-    # Scroll down a couple of artists.
-    xdotool key --delay 200 j
-    xdotool key --delay 200 j
-    sleep 0.8
-
-    # Enter the artist.
-    xdotool key Return
-    sleep 1.5
-
-    # Select the top section (Top Tracks).
-    xdotool key Return
-    sleep 1.2
-
-    # Pick a track and play it.
-    xdotool key --delay 200 j
+    # Back to the top (Discover Weekly), then down one to Liked Songs so the
+    # descent is deterministic.
+    xdotool key g; sleep 0.12; xdotool key g    # gg -> top (Discover Weekly)
     sleep 0.4
+    xdotool key j                                # -> Liked Songs (row 2)
+    sleep 0.6
+
+    # --- 3. Descend into Liked Songs (a wall of album-art rows) ---
     xdotool key Return
-    sleep 3.0              # linger on now-playing while track starts
+    sleep 1.8
+    # Move to the 14th track (cursor lands on row 1 on descent) — that song has
+    # synced lyrics, unlike the EDM up top. 13 presses = row 14.
+    xdotool key --delay 160 j j j j j j j j j j j j j
+    sleep 0.8
 
-    # --- 7. Device selector ---
-    xdotool key d
-    sleep 2.5
+    # --- 4. Play it: now-playing fills with large art + metadata ---
+    xdotool key Return
+    sleep 3.0
+
+    # --- 5. Synced lyrics: open, then linger while they load and scroll ---
+    xdotool key B
+    sleep 13.0         # lyrics are slow to load; linger long enough to read them
     xdotool key Escape
-    sleep 0.8
+    sleep 0.6
 
-    # --- 8. Expand album art ---
-    xdotool key V               # shift+v expands album art
-    sleep 4.5              # linger with big art on screen
+    # --- 6. Expand album art to fill the screen (v, lowercase) ---
+    xdotool key v
+    sleep 4.0
+    xdotool key v               # toggle back
+    sleep 0.6
 
-    # Close the big-art view.
-    xdotool key V
-    sleep 0.8
+    # --- 7. Spotify Connect device picker (d) ---
+    xdotool key d
+    sleep 2.2
+    xdotool key Escape
+    sleep 0.6
 
-    # Toggle thumb mode once to demo no-thumbnail mode.
-    xdotool key shift+t
-    sleep 2.5              # linger so viewer sees the thumb-less list
+    # --- 8. Toggle inline thumbnails off, then on (T) ---
+    xdotool key T
+    sleep 2.0
+    xdotool key T
+    sleep 1.0
 
-    # Stop the recorder BEFORE quitting fuga, so the shell prompt is
-    # never captured. SIGINT lets libx264 flush the mp4 trailer cleanly.
+    # Stop the recorder BEFORE quitting fuga, so the shell prompt is never
+    # captured, and WAIT for ffmpeg to fully flush the mp4 moov atom before
+    # quitting. Quitting fuga can crash a graphics terminal (sixel/Kitty st
+    # fork) on teardown; if that happens before ffmpeg has flushed, the mp4
+    # trailer is lost and the file is unreadable. Polling kill -0 until
+    # ffmpeg exits guarantees a valid mp4 regardless of the terminal dying.
     kill -INT "$FFMPEG_PID" 2>/dev/null || true
+    i=0
+    while kill -0 "$FFMPEG_PID" 2>/dev/null && [ "$i" -lt 60 ]; do
+        sleep 0.2
+        i=$((i + 1))
+    done
 
     # Quit fuga.
     xdotool key q

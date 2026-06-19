@@ -1,8 +1,4 @@
-```text
-░█▀▀░█░█░█▀▀░█▀█
-░█▀▀░█░█░█░█░█▀█
-░▀░░░▀▀▀░▀▀▀░▀░▀
-```
+# fuga
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust 2024](https://img.shields.io/badge/edition-2024-dea584.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
