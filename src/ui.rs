@@ -1875,6 +1875,7 @@ fn action_label(a: &crate::keys::Action) -> Option<&'static str> {
         Action::ClearQueue => "clear queue",
         Action::RemoveFromQueue => "remove row",
         Action::ExpandHoveredArt => "view art",
+        Action::ToggleArtSize => "art size",
         Action::OpenActionMenu => "action menu",
         Action::TogglePinHovered => "pin row",
         Action::FilterInPage => "filter list",

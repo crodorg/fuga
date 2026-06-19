@@ -62,6 +62,9 @@ pub enum Action {
     /// Expand the cover-art of the row currently under the cursor to a
     /// centered overlay. Triggered by `V` (view). Closed by any key/click.
     ExpandHoveredArt,
+    /// Toggle the now-playing art panel between full size and collapsed
+    /// (bottom-bar height). `e` by default; mirrors the art-panel click.
+    ToggleArtSize,
     /// Open the per-track action menu (like, add-to-queue, pin, go to
     /// album/artist, song radio, add to playlist). `m` by default.
     OpenActionMenu,
@@ -326,6 +329,7 @@ pub fn parse_action(s: &str) -> Option<Action> {
         "seek_forward" => Action::SeekRelative(10),
         "remove_from_queue" => Action::RemoveFromQueue,
         "expand_art" => Action::ExpandHoveredArt,
+        "toggle_art_size" => Action::ToggleArtSize,
         "open_action_menu" => Action::OpenActionMenu,
         "toggle_pin" => Action::TogglePinHovered,
         "download_hovered" => Action::DownloadHovered,
@@ -360,5 +364,13 @@ mod tests {
             Action::SourceJump(s) => assert_eq!(s, "spotify"),
             _ => panic!("wrong action"),
         }
+    }
+
+    #[test]
+    fn parses_toggle_art_size_action() {
+        assert!(matches!(
+            parse_action("toggle_art_size"),
+            Some(Action::ToggleArtSize)
+        ));
     }
 }

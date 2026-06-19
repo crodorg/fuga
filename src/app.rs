@@ -224,6 +224,13 @@ pub struct App {
     pub thumb_cycle: Vec<crate::term_probe::ThumbMode>,
 
     pub now_playing_protocol: Option<StatefulProtocol>,
+    /// Decoded source image behind `now_playing_protocol`, kept so the panel
+    /// can rebuild a *fresh* protocol (new graphics id) when toggling between
+    /// full and collapsed size. Reusing one protocol across both sizes leaves
+    /// the larger Kitty placement blank on some terminals; a fresh id repaints.
+    /// Stored directly (not re-peeked from `art_cache`) to survive LRU
+    /// eviction and the Spotify art-uri vs library-uri key mismatch.
+    pub now_playing_art: Option<Arc<image::DynamicImage>>,
     pub now_playing_uri: Option<String>,
     /// Natural pixel dimensions of the now-playing image, captured at
     /// protocol-build time. Used by `compute_art_dims` to shape the panel
@@ -485,6 +492,7 @@ impl App {
             art_width_pct,
             thumb_cycle,
             now_playing_protocol: None,
+            now_playing_art: None,
             now_playing_uri: None,
             now_playing_aspect: None,
             lyrics_visible: false,
@@ -1211,6 +1219,7 @@ impl App {
             Action::ClearQueue => self.clear_queue().await,
             Action::RemoveFromQueue => self.remove_from_queue().await,
             Action::ExpandHoveredArt => self.expand_hovered_art().await,
+            Action::ToggleArtSize => self.toggle_art_collapsed(),
             Action::OpenActionMenu => self.open_action_menu(),
             Action::TogglePinHovered => self.toggle_pin_hovered(),
             Action::FilterInPage => self.begin_filter_input(),
@@ -1594,6 +1603,7 @@ impl App {
         self.protocols.clear();
         self.fetching.clear();
         self.now_playing_protocol = None;
+        self.now_playing_art = None;
         self.now_playing_uri = None;
         self.now_playing_aspect = None;
         self.refresh_now_playing().await;
@@ -3141,6 +3151,22 @@ impl App {
         self.dirty = true;
     }
 
+    /// Toggle the now-playing art panel between full size and collapsed
+    /// (bottom-bar height). Rebuilds the image protocol from the stored
+    /// source so a fresh graphics id is transmitted at the new size —
+    /// reusing the old protocol leaves the larger Kitty placement blank
+    /// after a small→large toggle (only a fresh id repaints). Bound to the
+    /// `e` key and the art-panel mouse click.
+    fn toggle_art_collapsed(&mut self) {
+        self.art_collapsed = !self.art_collapsed;
+        if let Some(img) = self.now_playing_art.as_ref() {
+            let proto = self.term.picker.new_resize_protocol((**img).clone());
+            self.now_playing_protocol = Some(proto);
+        }
+        self.persist_state();
+        self.dirty = true;
+    }
+
     /// Open the expanded-art overlay on the row under the cursor. Picks
     /// the largest art URL the row exposes (`art_uri_full` first, else
     /// `art_uri`). Spawns a fetch so Spotify's high-res CDN URL lands in
@@ -3555,6 +3581,7 @@ impl App {
     async fn refresh_now_playing(&mut self) {
         let Some(cur) = self.queue.current().cloned() else {
             self.now_playing_protocol = None;
+            self.now_playing_art = None;
             self.now_playing_uri = None;
             self.now_playing_aspect = None;
             self.current_liked = None;
@@ -3624,10 +3651,12 @@ impl App {
                 self.now_playing_aspect = Some((w, h));
                 let proto = self.term.picker.new_resize_protocol((*arc).clone());
                 self.now_playing_protocol = Some(proto);
+                self.now_playing_art = Some(arc.clone());
             }
             Err(e) => {
                 tracing::debug!("now-playing art unavailable: {e}");
                 self.now_playing_protocol = None;
+                self.now_playing_art = None;
                 self.now_playing_aspect = None;
             }
         }
@@ -3792,9 +3821,7 @@ impl App {
                 // survives restarts.
                 if let Some(art) = self.art_panel_rect {
                     if rect_contains(&art, x, y) {
-                        self.art_collapsed = !self.art_collapsed;
-                        self.persist_state();
-                        self.dirty = true;
+                        self.toggle_art_collapsed();
                         return Action::None;
                     }
                 }

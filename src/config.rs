@@ -357,6 +357,7 @@ fn default_global() -> &'static [(&'static str, &'static str)] {
         ("clear_queue", "C"),
         ("remove_from_queue", "D"),
         ("expand_art", "v"),
+        ("toggle_art_size", "e"),
         ("open_action_menu", "m"),
         ("toggle_pin", "P"),
         ("filter_in_page", "/"),
