@@ -5,3 +5,4 @@
 *.local.toml
 dist/
 docs/demo.mp4
+.checkgate

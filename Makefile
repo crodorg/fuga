@@ -1,4 +1,4 @@
-# Agent-environment check gate — Rust profile. Installed by ~/.claude/gate/install.sh.
+# Agent-environment check gate — Rust profile.
 # The codebase verifies itself so agents (and you) cannot commit code that breaks it.
 #   make check       full gate — CI runs exactly this (CI parity)
 #   make check-fast  fast deterministic checks — run on every commit (pre-commit hook)
