@@ -145,16 +145,11 @@ impl MusicSource for RadioSource {
     }
 
     async fn art(&self, uri: &str, _size: ArtSize) -> Result<Vec<u8>> {
-        let station = self
-            .station_for_uri(uri)
-            .ok_or_else(|| anyhow!("unknown radio: {uri}"))?;
-        let url = station
-            .art_url
-            .as_deref()
-            .ok_or_else(|| anyhow!("no art_url for {}", station.name))?;
+        let url = resolve_art_url(&self.stations, uri)
+            .ok_or_else(|| anyhow!("no art for radio uri: {uri}"))?;
         let bytes = self
             .http
-            .get(url)
+            .get(&url)
             .send()
             .await
             .with_context(|| format!("GET {url}"))?
@@ -180,6 +175,23 @@ fn station_to_item(s: &RadioStation) -> Item {
             track_no: None,
             year_hint: None,
         },
+    }
+}
+
+/// Resolve the image URL to fetch for an art request. Both art paths (inline
+/// thumbs + now-playing) hand us the station's `art_uri` — i.e. the raw
+/// http(s) image URL — exactly as Spotify's `art()` is called, so pass that
+/// through. Fall back to a `radio:<name>` station lookup for any caller still
+/// passing the station id.
+fn resolve_art_url(stations: &[RadioStation], uri: &str) -> Option<String> {
+    if uri.starts_with("http://") || uri.starts_with("https://") {
+        Some(uri.to_string())
+    } else {
+        let key = uri.strip_prefix("radio:").unwrap_or(uri);
+        stations
+            .iter()
+            .find(|s| s.name == key)
+            .and_then(|s| s.art_url.clone())
     }
 }
 
@@ -256,5 +268,28 @@ mod tests {
             parse_m3u(body).as_deref(),
             Some("https://stream.example/live")
         );
+    }
+
+    #[test]
+    fn art_url_passes_through_http_uri() {
+        // The art paths hand us the raw image URL, not a station id.
+        assert_eq!(
+            resolve_art_url(&[], "https://www.example.fun/favicon.ico").as_deref(),
+            Some("https://www.example.fun/favicon.ico")
+        );
+    }
+
+    #[test]
+    fn art_url_resolves_station_id_and_misses() {
+        let stations = vec![RadioStation {
+            name: "Wave".into(),
+            url: "https://example/stream".into(),
+            art_url: Some("https://example/a.png".into()),
+        }];
+        assert_eq!(
+            resolve_art_url(&stations, "radio:Wave").as_deref(),
+            Some("https://example/a.png")
+        );
+        assert_eq!(resolve_art_url(&stations, "radio:Unknown"), None);
     }
 }
