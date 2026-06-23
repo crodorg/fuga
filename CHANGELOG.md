@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] — 2026-06-22
+
+### Fixed
+
+- **Radio station artwork now loads** — the cover URL set via a station's
+  `art_url` (including `.ico` favicons) never displayed, in either the row
+  thumbnail or the now-playing panel. The radio source expected its own
+  internal station id where the art pipeline hands it the image URL, so every
+  fetch failed silently. Artwork now renders for all internet-radio stations.
+
 ## [0.3.2] — 2026-06-19
 
 ### Added
