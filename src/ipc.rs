@@ -21,11 +21,45 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 
 pub fn socket_path() -> PathBuf {
+    // Prefer $XDG_RUNTIME_DIR, but only when it actually points at a real
+    // directory. Some environments export it as `/run/user/UID`, which doesn't
+    // exist on macOS — using it there makes the bind fail and (since client and
+    // server must agree on the path) breaks the control plane. Fall back to
+    // /tmp so both ends resolve the same usable socket.
     if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR") {
-        return PathBuf::from(rt).join("fuga.sock");
+        let dir = PathBuf::from(rt);
+        if dir.is_dir() {
+            return dir.join("fuga.sock");
+        }
     }
     let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
     PathBuf::from(format!("/tmp/fuga-{user}.sock"))
+}
+
+/// Bind the control socket, trying the primary path then a `/tmp` fallback.
+/// The primary (`$XDG_RUNTIME_DIR/fuga.sock`) can be unusable when the env var
+/// points at a dir that doesn't exist on this OS (e.g. `/run/user/UID` on
+/// macOS); falling back keeps `fuga <cmd>` working. Returns `None` only if both
+/// fail. Caller MUST keep the request sender alive on `None` (see `serve`).
+fn bind_socket() -> Option<UnixListener> {
+    let primary = socket_path();
+    let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
+    let fallback = PathBuf::from(format!("/tmp/fuga-{user}.sock"));
+    let mut paths = vec![primary];
+    if !paths.contains(&fallback) {
+        paths.push(fallback);
+    }
+    for path in paths {
+        let _ = std::fs::remove_file(&path); // stale-socket cleanup
+        match UnixListener::bind(&path) {
+            Ok(listener) => {
+                tracing::info!("ipc listening on {}", path.display());
+                return Some(listener);
+            }
+            Err(e) => tracing::warn!("ipc bind {} failed: {e}", path.display()),
+        }
+    }
+    None
 }
 
 /// Commands wired into the TUI event loop. The reply slot lets the socket
@@ -36,11 +70,19 @@ pub struct IpcRequest {
 }
 
 pub async fn serve(tx: UnboundedSender<IpcRequest>) -> Result<()> {
-    let path = socket_path();
-    let _ = std::fs::remove_file(&path); // stale-socket cleanup
-    let listener = UnixListener::bind(&path)
-        .with_context(|| format!("bind unix socket {}", path.display()))?;
-    tracing::info!("ipc listening on {}", path.display());
+    let listener = match bind_socket() {
+        Some(l) => l,
+        None => {
+            // Couldn't bind anywhere. Park forever HOLDING `tx` rather than
+            // returning (which drops the sender, closes the receiver, and
+            // busy-spins the main select! loop). The control plane is simply
+            // unavailable; the TUI keeps working.
+            tracing::error!("ipc: could not bind a control socket; `fuga <cmd>` disabled");
+            let _keep = tx;
+            std::future::pending::<()>().await;
+            return Ok(());
+        }
+    };
     loop {
         let (stream, _addr) = match listener.accept().await {
             Ok(s) => s,

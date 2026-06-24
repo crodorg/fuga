@@ -9,18 +9,23 @@ use crate::types::{PlayState, PlaybackStatus};
 /// (LocalSource, RadioSource, SomaFmSource) so we don't duplicate the
 /// command + field-mapping boilerplate.
 pub async fn mpd_status(client: &Client) -> Result<PlaybackStatus> {
-    let s = client
-        .command(commands::Status)
+    // Batch Status + CurrentSong into a single command-list round-trip rather
+    // than two sequential commands — halves the per-poll socket traffic (and
+    // the mpd_client idle/noidle re-arm cycle) with identical results. Both are
+    // still fetched every poll, so live ICY stream titles (radio/somafm) keep
+    // updating exactly as before.
+    let (s, current) = client
+        .command_list((commands::Status, commands::CurrentSong))
         .await
         .context("MPD status")?;
     // Capture both codec (from URL extension) and live stream title (MPD
     // surfaces ICY StreamTitle via the Title tag for HTTP streams).
-    let (codec, stream_title) = match client.command(commands::CurrentSong).await {
-        Ok(Some(cs)) => (
+    let (codec, stream_title) = match current {
+        Some(cs) => (
             codec_from_url(&cs.song.url),
             cs.song.title().map(str::to_owned),
         ),
-        _ => (None, None),
+        None => (None, None),
     };
     Ok(PlaybackStatus {
         elapsed: s.elapsed.unwrap_or_default(),

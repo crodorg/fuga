@@ -500,10 +500,12 @@ fn render_tabs(app: &App, f: &mut Frame<'_>, area: Rect) {
 fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option<u16>) {
     let base_title = app.current_view_title();
     let cat = app.active_category();
-    let view_clone: Option<LibraryView> = app
-        .category_states
-        .get(&cat)
-        .and_then(|s| s.stack.last().cloned());
+    // Borrow the current view rather than deep-cloning it. `rows` below is
+    // owned, so this borrow ends before the later `&mut app` mutations
+    // (set_filtered_browse_indices, body_top_at_render, …) — which is the only
+    // reason the clone existed. Drops one full per-frame copy of every Entry's
+    // strings; rows are built straight from the source.
+    let view = app.category_states.get(&cat).and_then(|s| s.stack.last());
 
     let pk = playing_key(app);
     let now_playing_match = |scheme: &'static str, uri: &str| -> bool {
@@ -512,7 +514,7 @@ fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option
             None => false,
         }
     };
-    let rows: Vec<ThumbRowSpec> = match view_clone.as_ref() {
+    let rows: Vec<ThumbRowSpec> = match view {
         Some(LibraryView::Entries {
             scheme, entries, ..
         }) => entries

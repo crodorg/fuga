@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use crossterm::event::{Event, EventStream, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
-use futures::{FutureExt, StreamExt};
+use crossterm::event::{Event, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
+use futures::FutureExt;
 use mpd_client::client::{ConnectionEvent, ConnectionEvents, Subsystem};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -253,6 +253,11 @@ pub struct App {
     pub shuffle: bool,
     pub repeat: RepeatMode,
     pub tick_counter: u32,
+    /// Last *rendered* playback-position quantum `(whole_secs, bar_eighths,
+    /// lyrics_active_line)`. `on_tick` polls elapsed at sub-second precision
+    /// but the UI only shows it at these coarse steps, so we mark the screen
+    /// dirty only when this tuple changes — see `elapsed_render_quantum`.
+    pub last_progress_quantum: Option<(u64, usize, usize)>,
     /// Baseline change-token `(path, snapshot)` for the currently-open
     /// pollable Spotify view (Liked / a playlist). The open-view poller
     /// compares fresh snapshots against this to auto-refresh on external edits.
@@ -503,6 +508,7 @@ impl App {
             shuffle: false,
             repeat: RepeatMode::Off,
             tick_counter: 0,
+            last_progress_quantum: None,
             open_view_snapshot: None,
             poll_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             keymap,
@@ -3362,11 +3368,22 @@ impl App {
             return;
         };
         if let Ok(Some(s)) = src.playback_status().await {
-            let changed = self
+            // State/volume changes always redraw. Elapsed is polled at
+            // sub-second precision but only ever *shown* at coarse quanta — the
+            // mm:ss label is whole-second, the progress bar steps in eighths of
+            // a cell, and the synced-lyrics active line flips only when elapsed
+            // crosses a timestamp. Gating dirty on that rendered quantum (not
+            // on raw elapsed inequality) collapses steady-state redraws from
+            // ~4/sec to only the frames where a glyph actually changes, with
+            // byte-identical output. The 250ms poll cadence is unchanged, so
+            // the bar stays just as smooth on wide terminals.
+            let state_vol_changed = self
                 .playback
                 .as_ref()
-                .map(|p| p.elapsed != s.elapsed || p.state != s.state || p.volume != s.volume)
+                .map(|p| p.state != s.state || p.volume != s.volume)
                 .unwrap_or(true);
+            let quantum = self.elapsed_render_quantum(&s);
+            let elapsed_changed = self.last_progress_quantum != Some(quantum);
             // Sync master_volume from the source so external changes (Spotify
             // Connect from phone, MPRIS, MPD client, etc.) reflect in the UI
             // without the user having to touch +/-.
@@ -3374,10 +3391,55 @@ impl App {
                 self.master_volume = s.volume;
             }
             self.playback = Some(s);
-            if changed {
+            if state_vol_changed || elapsed_changed {
+                self.last_progress_quantum = Some(quantum);
                 self.dirty = true;
             }
         }
+    }
+
+    /// The coarse, *rendered* representation of the current playback position:
+    /// `(whole_seconds, progress_bar_eighths, synced_lyrics_active_line)`.
+    /// `on_tick` compares this between polls so it only marks the UI dirty when
+    /// one of these visible values actually changes.
+    fn elapsed_render_quantum(&self, s: &crate::types::PlaybackStatus) -> (u64, usize, usize) {
+        // Whole-second label (ui::fmt_mmss) and the indeterminate-stream bar,
+        // which scrolls on elapsed.as_secs().
+        let secs = s.elapsed.as_secs();
+        // Eighths of a cell along the determinate progress bar, matching
+        // ui::build_progress_bar. bar_width is read back from the last render's
+        // cached inner rect; it only changes on resize (which forces its own
+        // redraw), so a stale value can at worst cause one extra redraw, never
+        // a missed one.
+        let eighths = match (s.duration, self.progress_bar_rect) {
+            (Some(d), Some(bar)) if d.as_secs() > 0 && bar.width > 0 => {
+                let ratio = (s.elapsed.as_secs_f64() / d.as_secs_f64()).clamp(0.0, 1.0);
+                (f64::from(bar.width) * 8.0 * ratio).round() as usize
+            }
+            _ => 0,
+        };
+        // Synced-lyrics active line only affects the screen while the lyrics
+        // pane is open; mirrors the selection in ui::render_lyrics.
+        let lyric_idx = if self.lyrics_visible {
+            self.lyrics
+                .as_ref()
+                .map(|lyr| {
+                    let cur_ms = s.elapsed.as_millis();
+                    let mut active = 0usize;
+                    for (i, (t, _)) in lyr.lines.iter().enumerate() {
+                        if *t <= cur_ms {
+                            active = i;
+                        } else {
+                            break;
+                        }
+                    }
+                    active
+                })
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        (secs, eighths, lyric_idx)
     }
 
     /// Translate a key event through the keymap, with leader-buffer + input-mode
@@ -4303,7 +4365,7 @@ pub fn sections_row_at<'a>(sections: &'a [Section], idx: usize) -> Option<Sectio
 }
 
 pub async fn run(
-    _config: Config,
+    config: Config,
     mpd_events: ConnectionEvents,
     mut app: App,
     wake_rx: UnboundedReceiver<()>,
@@ -4351,6 +4413,7 @@ pub async fn run(
         spotify_events,
         ipc_rx,
         mpris_event_rx,
+        config.ui.fps_cap,
     )
     .await;
 
@@ -4385,21 +4448,48 @@ async fn run_loop(
     mut spotify_events: UnboundedReceiver<crate::source::spotify::SpotifyEvent>,
     mut ipc_rx: UnboundedReceiver<crate::ipc::IpcRequest>,
     mut mpris_events: Option<UnboundedReceiver<crate::mpris::MprisEvent>>,
+    fps_cap: u16,
 ) -> Result<()> {
-    let mut term_events = EventStream::new();
+    // Terminal input runs on a dedicated blocking thread. `crossterm::event::read()`
+    // parks until a real key/mouse/resize event, so the runtime never spins. The
+    // async `EventStream` it replaces was polled from the `select!` below and
+    // busy-spun on its internal parking_lot mutex (~one full core, even while
+    // idle — confirmed by sampling on macOS); a blocking read avoids that
+    // entirely. The thread exits when the channel closes or `read()` errors;
+    // fuga tears down via `process::exit`, so no explicit join is needed.
+    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Event>();
+    std::thread::Builder::new()
+        .name("fuga-input".into())
+        .spawn(move || {
+            while let Ok(ev) = crossterm::event::read() {
+                if input_tx.send(ev).is_err() {
+                    break;
+                }
+            }
+        })
+        .ok();
     let mut tick = tick_interval();
+    // Minimum interval between draws. At the default 30fps this never throttles
+    // legitimate frames (steady-state dirty is <=4Hz), but it coalesces any
+    // burst of dirty-setting events into one draw and honors a user-lowered
+    // `fps_cap`. A deferred frame is always redrawn within one tick (<=250ms).
+    let frame_min = Duration::from_millis(1000 / u64::from(fps_cap.max(1)));
+    let mut last_draw = Instant::now()
+        .checked_sub(frame_min)
+        .unwrap_or_else(Instant::now);
 
     loop {
-        if app.dirty {
+        if app.dirty && last_draw.elapsed() >= frame_min {
             terminal.draw(|f| ui::render(app, f)).context("draw")?;
             app.dirty = false;
+            last_draw = Instant::now();
         }
 
         tokio::select! {
             biased;
             _ = app.shutdown.cancelled() => break,
-            ev = term_events.next() => match ev {
-                Some(Ok(Event::Key(k))) => {
+            ev = input_rx.recv() => match ev {
+                Some(Event::Key(k)) => {
                     // Drop auto-repeat key events: holding +/- or H/L should
                     // act per-press, not blast actions at the OS repeat rate.
                     // Press + Release pass; Repeat ignored.
@@ -4486,7 +4576,7 @@ async fn run_loop(
                         }
                     }
                 }
-                Some(Ok(Event::Mouse(m))) => {
+                Some(Event::Mouse(m)) => {
                     let action = app.handle_mouse(m);
                     if action != Action::None {
                         if let Err(e) = app.handle_action(action).await {
@@ -4494,39 +4584,34 @@ async fn run_loop(
                         }
                     }
                 }
-                Some(Ok(Event::Resize(_, _))) => app.dirty = true,
-                Some(Ok(_)) => {}
-                Some(Err(e)) => {
-                    app.set_status(format!("term err: {e}"));
-                }
+                Some(Event::Resize(_, _)) => app.dirty = true,
+                Some(_) => {}
                 None => break,
             },
             ev = mpd_events.next().fuse() => match ev {
                 Some(e) => app.handle_mpd_event(e).await,
                 None => app.set_status("MPD event stream ended"),
             },
-            ev = spotify_events.recv() => {
-                if let Some(e) = ev {
-                    app.handle_spotify_event(e).await;
-                }
-            },
+            // `Some(..) =` rather than binding the whole Option: only handle
+            // real items, never a phantom None. (The control-plane sender is
+            // kept alive even when the socket can't bind — see ipc::serve — so
+            // these channels don't close under the loop and busy-spin it.)
+            Some(e) = spotify_events.recv() => {
+                app.handle_spotify_event(e).await;
+            }
             _ = wake_rx.recv() => {
                 while wake_rx.try_recv().is_ok() {}
                 app.drain_toast_inbox();
                 app.drain_lyrics_inbox();
                 app.dirty = true;
             }
-            batch = row_batch_rx.recv() => {
-                if let Some(b) = batch {
-                    app.handle_row_batch(b);
-                }
+            Some(b) = row_batch_rx.recv() => {
+                app.handle_row_batch(b);
             }
             _ = tick.tick() => app.on_tick().await,
-            req = ipc_rx.recv() => {
-                if let Some(req) = req {
-                    let reply = app.handle_ipc(&req.line).await;
-                    let _ = req.reply.send(reply);
-                }
+            Some(req) = ipc_rx.recv() => {
+                let reply = app.handle_ipc(&req.line).await;
+                let _ = req.reply.send(reply);
             }
             ev = recv_mpris(&mut mpris_events) => {
                 if let Some(e) = ev {
