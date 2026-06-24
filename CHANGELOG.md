@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] — 2026-06-24
+
+### Fixed
+
+- **High idle CPU usage** — fuga continuously used roughly 10% of a CPU core
+  even when stopped, most noticeable on macOS. The terminal input path polled
+  an async event stream that busy-spun on its internal lock with no input
+  pending; input now reads on a dedicated blocking thread, dropping idle CPU
+  to near zero. A control-socket bind failure (for example when
+  `XDG_RUNTIME_DIR` pointed at a directory absent on the host) could also spin
+  the event loop — the socket path now falls back to `/tmp` and a failed bind
+  no longer burns a core.
+
+### Changed
+
+- **Lower CPU while playing**, with no change to behavior or appearance —
+  redraws are gated on the visible elapsed quantum (whole seconds, progress-bar
+  steps, active lyrics line) rather than the raw sub-second position, the MPD
+  status and current-song polls are batched into a single round-trip, the
+  configured `fps_cap` is honored as a redraw cap, and the browse view is built
+  without a per-frame deep clone.
+
 ## [0.3.3] — 2026-06-22
 
 ### Fixed
