@@ -65,9 +65,20 @@ impl Term {
         // (visible-only), so kitty re-transmits are dropped while our tmux
         // window is hidden and art comes back broken after a window switch.
         // Upgrade the pane option to "all".
+        //
+        // allow-passthrough=all is necessary but not sufficient: on a
+        // window-switch return tmux repaints the pane's text cells but never
+        // replays the once-transmitted kitty bitmap, so the art shows as bare
+        // (reddish) placeholder glyphs until something re-transmits. We force a
+        // re-transmit on crossterm's FocusGained (run_loop), but tmux only
+        // delivers FocusGained to the pane when focus-events is on — and it
+        // defaults to off. So enable it here too. See decisions.md 2026-06-26.
         if std::env::var_os("TMUX").is_some() {
             let _ = std::process::Command::new("tmux")
                 .args(["set", "-p", "allow-passthrough", "all"])
+                .output();
+            let _ = std::process::Command::new("tmux")
+                .args(["set", "-g", "focus-events", "on"])
                 .output();
         }
         let mut kitty_capable = matches!(picker.protocol_type(), ProtocolType::Kitty);

@@ -4,10 +4,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
-use librespot::connect::{ConnectConfig, Spirc};
 use librespot::core::SpotifyUri;
 use librespot::core::authentication::Credentials;
-use librespot::core::config::{DeviceType, SessionConfig};
+use librespot::core::config::SessionConfig;
 use librespot::core::session::Session;
 use librespot::core::spotify_id::SpotifyId;
 use librespot::playback::audio_backend;
@@ -61,13 +60,7 @@ pub struct SpotifyPlayer {
     /// timeout) so a paused track resumes where it left off.
     pub current: std::sync::Mutex<Option<(PlayableKind, String)>>,
     pub session: Session,
-    /// Spotify Connect handle. Holding this advertises fuga as a Connect
-    /// device on the user's account; phones/desktops see it in their device
-    /// list and can transfer playback to/from it. When another device takes
-    /// over, librespot yields cleanly instead of fighting for output.
-    pub spirc: Option<Spirc>,
     _events_task: tokio::task::JoinHandle<()>,
-    _spirc_task: tokio::task::JoinHandle<()>,
 }
 
 impl SpotifyPlayer {
@@ -82,6 +75,21 @@ impl SpotifyPlayer {
         };
         let session = Session::new(session_config, None);
         let credentials = Credentials::with_access_token(access_token);
+        // Authenticate the session directly. fuga drives the Player itself and
+        // manages its own unified cross-source queue, so it deliberately does
+        // NOT run librespot's Spirc (Spotify Connect) controller. Spirc keeps a
+        // second, context-less playback state that stops the player at every
+        // track end (spirc.rs handle_next -> handle_stop -> player.stop()),
+        // racing fuga's own queue advance and intermittently killing the next
+        // track at 0:00 ("playback stops after ~10 songs"). No Spirc, no race.
+        // Trade-off: fuga no longer advertises as a Connect device, so playback
+        // can't be transferred to/from it from a phone (transferring to *other*
+        // devices via the Web API device picker still works). See decisions.md
+        // 2026-06-26.
+        session
+            .connect(credentials, false)
+            .await
+            .map_err(|e| anyhow!("librespot session connect: {e}"))?;
 
         let bitrate = parse_bitrate(config.resolved_bitrate());
         let player_config = PlayerConfig {
@@ -109,27 +117,6 @@ impl SpotifyPlayer {
             mixer.get_soft_volume(),
             move || backend(None, audio_format),
         );
-
-        // Spirc::new authenticates the session AND registers fuga as a
-        // Spotify Connect device. Must come after Player construction
-        // because Spirc needs the player handle.
-        let connect_config = ConnectConfig {
-            name: config.device_name.clone(),
-            device_type: DeviceType::Computer,
-            ..ConnectConfig::default()
-        };
-        let (spirc, spirc_future) = Spirc::new(
-            connect_config,
-            session.clone(),
-            credentials,
-            player.clone(),
-            mixer.clone(),
-        )
-        .await
-        .map_err(|e| anyhow!("librespot Spirc init: {e}"))?;
-        let spirc_task = tokio::spawn(async move {
-            spirc_future.await;
-        });
 
         let stopped_signal = Arc::new(Notify::new());
         let position = Arc::new(Mutex::new(PositionAnchor::default()));
@@ -213,9 +200,7 @@ impl SpotifyPlayer {
             state,
             current: std::sync::Mutex::new(None),
             session,
-            spirc: Some(spirc),
             _events_task: events_task,
-            _spirc_task: spirc_task,
         })
     }
 

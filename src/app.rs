@@ -232,6 +232,14 @@ pub struct App {
     /// eviction and the Spotify art-uri vs library-uri key mismatch.
     pub now_playing_art: Option<Arc<image::DynamicImage>>,
     pub now_playing_uri: Option<String>,
+    /// Count of Spotify tracks that failed to start back-to-back without a
+    /// successful play in between. A failed track (librespot Unavailable: a
+    /// CDN 530 with no fallback in librespot 0.8.0, a region restriction, or a
+    /// load failure after a connection hiccup) auto-skips to the next queue
+    /// item; this bounds the skipping so a dead session or an all-unavailable
+    /// context halts cleanly instead of stampeding the queue into a rate-limit.
+    /// Reset to 0 on any successful Playing / clean EndOfTrack.
+    pub consecutive_play_failures: u32,
     /// Natural pixel dimensions of the now-playing image, captured at
     /// protocol-build time. Used by `compute_art_dims` to shape the panel
     /// to the source aspect (no whitespace letterbox for non-square art).
@@ -443,6 +451,28 @@ fn queue_item_matches(item: &crate::queue::QueuedItem, q_lower: &str) -> bool {
     false
 }
 
+/// Max Spotify track-load failures in a row before playback halts instead of
+/// skipping onward. Bounds the auto-skip so a dead session or an all-unavailable
+/// context can't stampede the queue into a Spotify rate-limit.
+const MAX_CONSECUTIVE_PLAY_FAILURES: u32 = 3;
+
+/// Whether a track-load failure should skip to the next item or halt playback.
+#[derive(Debug, PartialEq, Eq)]
+enum PlayFailureAction {
+    Skip,
+    Halt,
+}
+
+/// Pure policy over the back-to-back failure count, split out so it's
+/// unit-testable without a live dispatcher/session.
+fn play_failure_action(consecutive: u32) -> PlayFailureAction {
+    if consecutive >= MAX_CONSECUTIVE_PLAY_FAILURES {
+        PlayFailureAction::Halt
+    } else {
+        PlayFailureAction::Skip
+    }
+}
+
 impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -499,6 +529,7 @@ impl App {
             now_playing_protocol: None,
             now_playing_art: None,
             now_playing_uri: None,
+            consecutive_play_failures: 0,
             now_playing_aspect: None,
             lyrics_visible: false,
             lyrics: None,
@@ -3173,6 +3204,28 @@ impl App {
         self.dirty = true;
     }
 
+    /// Force every cached image protocol to re-transmit on the next draw by
+    /// rebuilding it with a fresh graphics id. ratatui-image transmits a kitty
+    /// bitmap exactly once (its internal AtomicBool), then only re-emits the
+    /// id-colored placeholder cells; tmux preserves those cells across a
+    /// window-switch redraw but not the bitmap, so the cached protocols would
+    /// otherwise paint bare placeholder glyphs forever. Same fresh-id repaint
+    /// the size toggle and song change already rely on. Called from run_loop on
+    /// FocusGained (tmux only). See decisions.md 2026-06-26.
+    fn invalidate_image_protocols(&mut self) {
+        // Inline row thumbs: drop so thumb_list rebuilds visible rows from the
+        // art cache (fresh ids) on the next render.
+        self.protocols.clear();
+        // Now-playing panel: rebuild from the retained source image.
+        if let Some(img) = self.now_playing_art.as_ref() {
+            let proto = self.term.picker.new_resize_protocol((**img).clone());
+            self.now_playing_protocol = Some(proto);
+        }
+        // Expanded-art overlay, if open: drop so ui::render rebuilds it from the
+        // cache on the next frame.
+        self.expanded_art_protocol = None;
+    }
+
     /// Open the expanded-art overlay on the row under the cursor. Picks
     /// the largest art URL the row exposes (`art_uri_full` first, else
     /// `art_uri`). Spawns a fetch so Spotify's high-res CDN URL lands in
@@ -3725,28 +3778,61 @@ impl App {
         self.dirty = true;
     }
 
+    /// Advance to the next queue item honoring shuffle/repeat, reporting a
+    /// dispatch failure as a status. Shared by the clean-end and the
+    /// skip-on-failure paths in `handle_spotify_event`.
+    async fn advance_queue(&mut self) {
+        let vol = self.master_volume;
+        let shuf = self.shuffle;
+        let rep = self.repeat;
+        if let Err(e) = self
+            .dispatcher
+            .advance_with(&mut self.queue, shuf, rep, vol)
+            .await
+        {
+            self.set_status(format!("queue advance error: {e}"));
+        } else {
+            self.refresh_now_playing().await;
+        }
+    }
+
     async fn handle_spotify_event(&mut self, ev: crate::source::spotify::SpotifyEvent) {
         use crate::source::spotify::SpotifyEvent;
         match ev {
             SpotifyEvent::EndOfTrack => {
-                let vol = self.master_volume;
-                let shuf = self.shuffle;
-                let rep = self.repeat;
-                if let Err(e) = self
-                    .dispatcher
-                    .advance_with(&mut self.queue, shuf, rep, vol)
-                    .await
-                {
-                    self.set_status(format!("queue advance error: {e}"));
-                } else {
-                    self.refresh_now_playing().await;
-                }
+                // Clean track end = playback is healthy; clear the failure run.
+                self.consecutive_play_failures = 0;
+                self.advance_queue().await;
             }
-            SpotifyEvent::Playing => self.set_status("spotify: playing"),
+            SpotifyEvent::Playing => {
+                // A track actually started — the failure run is broken.
+                self.consecutive_play_failures = 0;
+                self.set_status("spotify: playing");
+            }
             SpotifyEvent::Paused => self.set_status("spotify: paused"),
             SpotifyEvent::Stopped => {}
             SpotifyEvent::Loading => self.set_status("spotify: loading"),
-            SpotifyEvent::Error(s) => self.set_status(format!("spotify error: {s}")),
+            SpotifyEvent::Error(s) => {
+                // A track failed to start (librespot Unavailable: a CDN 530 with
+                // no fallback in librespot 0.8.0, a region restriction, or a load
+                // failure after a connection hiccup). Skip to the next queue item
+                // instead of dead-stopping at 0:00 — but bound it: after
+                // MAX_CONSECUTIVE_PLAY_FAILURES back-to-back failures (a dead
+                // session, or a context where every track is unavailable), halt
+                // and surface the problem rather than stampeding the queue into a
+                // Spotify rate-limit.
+                self.consecutive_play_failures += 1;
+                match play_failure_action(self.consecutive_play_failures) {
+                    PlayFailureAction::Halt => self.set_status(format!(
+                        "playback halted: {} tracks failed in a row (last: {s}) — check connection",
+                        self.consecutive_play_failures
+                    )),
+                    PlayFailureAction::Skip => {
+                        self.set_status(format!("track unavailable ({s}) — skipping"));
+                        self.advance_queue().await;
+                    }
+                }
+            }
         }
         self.dirty = true;
     }
@@ -4398,7 +4484,11 @@ pub async fn run(
     crossterm::execute!(
         stdout,
         crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
+        crossterm::event::EnableMouseCapture,
+        // Focus reporting: lets run_loop re-transmit kitty art on a tmux
+        // window-switch return (FocusGained). tmux forwards it only when its
+        // focus-events option is on (set in Term::probe).
+        crossterm::event::EnableFocusChange
     )
     .context("enter alt screen")?;
     let backend = CrosstermBackend::new(stdout);
@@ -4420,6 +4510,7 @@ pub async fn run(
     crossterm::terminal::disable_raw_mode().ok();
     crossterm::execute!(
         io::stdout(),
+        crossterm::event::DisableFocusChange,
         crossterm::event::DisableMouseCapture,
         crossterm::terminal::LeaveAlternateScreen
     )
@@ -4585,6 +4676,18 @@ async fn run_loop(
                     }
                 }
                 Some(Event::Resize(_, _)) => app.dirty = true,
+                // Returning to a hidden tmux window repaints the pane's text
+                // cells but not the once-transmitted kitty bitmaps, leaving the
+                // art as bare (reddish) placeholder glyphs. Rebuild the image
+                // protocols — fresh graphics ids force a re-transmit — on the
+                // focus-return. tmux only (focus-events enabled in Term::probe);
+                // outside tmux the terminal keeps art resident across focus, so
+                // a rebuild would be needless re-encode work. See decisions.md
+                // 2026-06-26.
+                Some(Event::FocusGained) if std::env::var_os("TMUX").is_some() => {
+                    app.invalidate_image_protocols();
+                    app.dirty = true;
+                }
                 Some(_) => {}
                 None => break,
             },
@@ -4716,4 +4819,19 @@ pub fn web_url_for_uri(uri: &str) -> Option<String> {
         return Some(format!("https://www.youtube.com/watch?v={id}"));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PlayFailureAction, play_failure_action};
+
+    #[test]
+    fn play_failure_skips_below_cap_then_halts() {
+        // The first two back-to-back failures skip onward; the third (== cap)
+        // halts, and it stays halted past the cap.
+        assert_eq!(play_failure_action(1), PlayFailureAction::Skip);
+        assert_eq!(play_failure_action(2), PlayFailureAction::Skip);
+        assert_eq!(play_failure_action(3), PlayFailureAction::Halt);
+        assert_eq!(play_failure_action(4), PlayFailureAction::Halt);
+    }
 }

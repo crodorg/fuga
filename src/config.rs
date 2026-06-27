@@ -349,7 +349,6 @@ fn default_global() -> &'static [(&'static str, &'static str)] {
         ("toggle_help", "?"),
         ("toggle_lyrics", "B"),
         ("toggle_like", "F"),
-        ("open_devices", "d"),
         ("toggle_shuffle", "z"),
         ("cycle_repeat", "x"),
         ("open_sort", "o"),
@@ -361,7 +360,7 @@ fn default_global() -> &'static [(&'static str, &'static str)] {
         ("open_action_menu", "m"),
         ("toggle_pin", "P"),
         ("filter_in_page", "/"),
-        ("download_hovered", "Y"),
+        ("download_hovered", "d"),
     ]
 }
 
