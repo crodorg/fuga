@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] — 2026-06-27
+
+### Fixed
+
+- **Spotify playback stopped after about ten songs** — a track would halt at
+  0:00 and refuse to advance. fuga drives the librespot player directly and
+  manages its own queue, but it also ran librespot's Spotify Connect controller
+  in parallel; with no Connect context that controller stopped the player at
+  every track end, racing fuga's queue advance and occasionally killing the next
+  track as it started. fuga now authenticates the session directly and no longer
+  runs that controller, so the race is gone. (fuga no longer advertises itself as
+  a Spotify Connect device.)
+- **One unplayable track no longer stalls the queue** — when a Spotify track
+  fails to start (an unavailable track, a CDN error, a region block), fuga skips
+  to the next item instead of stopping, halting only if several tracks fail in a
+  row.
+- **Album art going blank in tmux** — after switching away from and back to
+  fuga's tmux window, Kitty album art could vanish and leave reddish placeholder
+  blocks until the track changed. fuga now repaints the art when the window
+  regains focus.
+
+### Changed
+
+- **`d` downloads the hovered track** (previously `Y`). The device picker `d`
+  used to open is unbound by default — without Spotify Connect it can no longer
+  see or control fuga's own playback — but it remains available to bind in your
+  config.
+
 ## [0.3.4] — 2026-06-24
 
 ### Fixed
