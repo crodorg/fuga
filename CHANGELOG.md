@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] — 2026-06-28
+
+### Fixed
+
+- **100% CPU while idle without a desktop session bus** — when fuga ran somewhere
+  with no D-Bus session bus (a headless server, a plain SSH session, a minimal
+  window manager, a container), its media-key bridge couldn't reach the bus and
+  shut down. That left fuga's main loop endlessly polling a closed channel,
+  pinning a CPU core even while nothing was happening. fuga now stops watching a
+  source once it goes away, so an idle session uses no CPU. On a normal desktop,
+  where the session bus is present, nothing changes.
+- **Idle spin if the MPD connection dropped** — the same kind of stall could
+  happen if MPD went away mid-session (a service restart, a network blip). The
+  local source now pauses cleanly instead of spinning, and the rest of fuga keeps
+  working.
+
 ## [0.3.5] — 2026-06-27
 
 ### Fixed
