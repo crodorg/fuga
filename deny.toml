@@ -1,0 +1,62 @@
+# cargo-deny config for fuga. Run via `sh scripts/qa.sh audit` (or `cargo deny check`).
+# Tuned 2026-06-28: real license allowlist + an advisory ignore-list for the
+# librespot-owned transitive advisories (see rationale per entry). The point is that
+# `cargo deny check` stays green on the KNOWN set so CI fails only on NEW advisories.
+
+[graph]
+all-features = false
+no-default-features = false
+
+[advisories]
+# Every entry below is pulled transitively by librespot 0.8.0 (already the latest on
+# crates.io) and is NOT fixable from fuga without an upstream librespot release.
+# Re-evaluate this whole list whenever librespot is bumped.
+ignore = [
+    # (quinn-proto RUSTSEC-2026-0185 deliberately NOT ignored: not in fuga's build graph
+    #  on any target — `cargo tree -i quinn-proto --target all` is empty — so it never fires.)
+    "RUSTSEC-2023-0071", # rsa 0.9 Marvin timing sidechannel; librespot-core Spotify auth; NO upstream fix exists
+    "RUSTSEC-2026-0099", # rustls-webpki 0.102.8; librespot's old rustls-0.22 stack (hyper-proxy2). fuga's own TLS uses fixed rustls-webpki 0.103.13
+    "RUSTSEC-2026-0104", # rustls-webpki 0.102.8; same librespot old stack (reachable panic in CRL parsing)
+    "RUSTSEC-2026-0098", # rustls-webpki 0.102.8; same librespot old stack (name-constraint bypass)
+    "RUSTSEC-2026-0049", # rustls-webpki 0.102.8; same librespot old stack (CRL authoritative matching)
+    "RUSTSEC-2024-0436", # paste unmaintained; transitive proc-macro via the librespot stack
+    "RUSTSEC-2025-0134", # rustls-pemfile unmaintained; via rustls-native-certs in librespot's stack
+]
+
+[licenses]
+# Permissive set actually present in fuga's tree (enumerated 2026-06-28).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",            # file-level copyleft, not viral; standard to allow in an MIT app
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "BSL-1.0",
+    "0BSD",
+    "NCSA",               # University of Illinois/NCSA; libfuzzer-sys (transitive via rav1e AVIF path)
+]
+confidence-threshold = 0.8
+exceptions = []
+
+# webpki 0.22.4 (librespot's old stack) ships no license field in its manifest; it is
+# ISC-licensed upstream. Assert it so the license check doesn't choke on the omission.
+[[licenses.clarify]]
+crate = "webpki@0.22.4"
+expression = "ISC"
+license-files = []
+
+[bans]
+multiple-versions = "warn"   # the tree has many dupes from librespot pinning older deps; warn, don't fail
+wildcards = "allow"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

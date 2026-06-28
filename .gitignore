@@ -6,3 +6,5 @@
 dist/
 docs/demo.mp4
 .checkgate
+mutants.out/
+mutants.out.old/

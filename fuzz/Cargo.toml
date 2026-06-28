@@ -1,0 +1,43 @@
+[package]
+name = "fuga-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+toml = "0.8"
+
+[dependencies.fuga]
+path = ".."
+
+[[bin]]
+name = "config_toml"
+path = "fuzz_targets/config_toml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "somafm_channels"
+path = "fuzz_targets/somafm_channels.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "radio_playlist"
+path = "fuzz_targets/radio_playlist.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "youtube_record"
+path = "fuzz_targets/youtube_record.rs"
+test = false
+doc = false
+bench = false

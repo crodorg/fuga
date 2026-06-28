@@ -29,10 +29,8 @@ toml = "0.8"
 indexmap = { version = "2", features = ["serde"] }
 
 anyhow = "1"
-thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-appender = "0.2"
 dirs = "5"
 clap = { version = "4", features = ["derive"] }
 ratatui-image = { version = "10.0.8", default-features = false, features = ["crossterm", "image-defaults"] }
@@ -74,3 +72,15 @@ block2 = "0.6"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[dev-dependencies]
+proptest = "1"
+
+# fuzz/ is a workspace member so it shares this crate's resolved Cargo.lock —
+# resolving it standalone pulled a second `vergen-lib` that broke librespot's
+# build script. `default-members` keeps plain cargo build/test/clippy scoped to
+# fuga (the gate never tries to build the nightly-only fuzz crate); cargo-fuzz
+# targets fuzz/ explicitly.
+[workspace]
+members = ["fuzz"]
+default-members = ["."]

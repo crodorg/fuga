@@ -146,7 +146,7 @@ pub enum TabAlignment {
 }
 
 impl TabAlignment {
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_config(s: &str) -> Self {
         match s {
             "left" => TabAlignment::Left,
             "right" => TabAlignment::Right,

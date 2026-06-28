@@ -306,4 +306,280 @@ mod tests {
         assert_eq!(q.current, Some(2));
         assert_eq!(q.items[3].uri, "b");
     }
+
+    #[test]
+    fn push_appends_and_grows_len() {
+        let mut q = Queue::new();
+        q.push(item("a"));
+        q.push(item("b"));
+        assert_eq!(q.len(), 2);
+        assert_eq!(q.items()[1].uri, "b");
+        assert_eq!(q.manual_count(), 0); // push is not manual
+    }
+
+    #[test]
+    fn manual_count_accessor_tracks_manual_pushes() {
+        // Into an empty queue, manual pushes form the manual prefix and DO
+        // bump manual_count (unlike a push_manual landing in the auto region).
+        let mut q = Queue::new();
+        assert_eq!(q.manual_count(), 0);
+        q.push_manual(item("m0"));
+        q.push_manual(item("m1"));
+        assert_eq!(q.manual_count(), 2);
+    }
+
+    #[test]
+    fn replace_auto_offset_accounts_for_manual_prefix() {
+        let mut q = Queue::new();
+        q.push_manual(item("m0")); // manual_count = 1, at idx 0
+        q.replace_auto(vec![item("a0"), item("a1"), item("a2")], 1);
+        // chosen = manual_count(1) + offset(1) = idx 2 = "a1"
+        assert_eq!(q.current_index(), Some(2));
+        assert_eq!(q.current().map(|i| i.uri.as_str()), Some("a1"));
+    }
+
+    #[test]
+    fn advance_with_no_repeat_advances_one() {
+        let mut q = auto_queue(3);
+        q.set_current(0);
+        let nxt = q
+            .advance_with(false, RepeatMode::Off)
+            .map(|i| i.uri.clone());
+        assert_eq!(nxt.as_deref(), Some("t1"));
+        assert_eq!(q.current_index(), Some(1));
+    }
+
+    #[test]
+    fn advance_with_repeat_off_falls_off_end() {
+        let mut q = auto_queue(2);
+        q.set_current(1); // last
+        assert!(q.advance_with(false, RepeatMode::Off).is_none());
+        assert_eq!(q.current_index(), Some(1)); // unchanged
+    }
+
+    #[test]
+    fn advance_with_repeat_all_wraps_to_start() {
+        let mut q = auto_queue(3);
+        q.set_current(2); // last
+        let nxt = q
+            .advance_with(false, RepeatMode::All)
+            .map(|i| i.uri.clone());
+        assert_eq!(nxt.as_deref(), Some("t0"));
+        assert_eq!(q.current_index(), Some(0));
+    }
+
+    #[test]
+    fn advance_with_repeat_track_stays_put() {
+        let mut q = auto_queue(3);
+        q.set_current(1);
+        let nxt = q
+            .advance_with(false, RepeatMode::Track)
+            .map(|i| i.uri.clone());
+        assert_eq!(nxt.as_deref(), Some("t1"));
+        assert_eq!(q.current_index(), Some(1));
+    }
+
+    #[test]
+    fn advance_with_empty_returns_none() {
+        let mut q = Queue::new();
+        assert!(q.advance_with(false, RepeatMode::All).is_none());
+        assert!(q.advance_with(true, RepeatMode::Track).is_none());
+    }
+
+    #[test]
+    fn advance_with_shuffle_single_item_stays() {
+        let mut q = auto_queue(1);
+        q.set_current(0);
+        // len == 1: the only valid pick is the single item.
+        let nxt = q.advance_with(true, RepeatMode::Off).map(|i| i.uri.clone());
+        assert_eq!(nxt.as_deref(), Some("t0"));
+        assert_eq!(q.current_index(), Some(0));
+    }
+
+    #[test]
+    fn back_moves_to_previous() {
+        let mut q = auto_queue(3);
+        q.set_current(2);
+        let prev = q.back().map(|i| i.uri.clone());
+        assert_eq!(prev.as_deref(), Some("t1"));
+        assert_eq!(q.current_index(), Some(1));
+    }
+
+    #[test]
+    fn back_at_start_returns_none() {
+        let mut q = auto_queue(3);
+        q.set_current(0);
+        assert!(q.back().is_none());
+        assert_eq!(q.current_index(), Some(0)); // unchanged
+    }
+
+    #[test]
+    fn remove_before_current_shifts_current_down() {
+        let mut q = auto_queue(4);
+        q.set_current(2); // t2
+        assert!(q.remove(0)); // drop t0
+        assert_eq!(q.current_index(), Some(1));
+        assert_eq!(q.current().map(|i| i.uri.as_str()), Some("t2"));
+    }
+
+    #[test]
+    fn remove_current_clears_current() {
+        let mut q = auto_queue(4);
+        q.set_current(2);
+        assert!(q.remove(2));
+        assert_eq!(q.current_index(), None);
+        assert_eq!(q.len(), 3);
+    }
+
+    #[test]
+    fn remove_after_current_keeps_current() {
+        let mut q = auto_queue(4);
+        q.set_current(1);
+        assert!(q.remove(3));
+        assert_eq!(q.current_index(), Some(1));
+        assert_eq!(q.current().map(|i| i.uri.as_str()), Some("t1"));
+    }
+
+    #[test]
+    fn remove_out_of_bounds_is_false() {
+        let mut q = auto_queue(2);
+        assert!(!q.remove(5));
+        assert_eq!(q.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod prop {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn item(id: &str) -> QueuedItem {
+        QueuedItem {
+            source_scheme: "local",
+            uri: id.into(),
+            display: ItemDisplay {
+                title: id.into(),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        Push,
+        PushManual,
+        ReplaceAuto(u8, u8),
+        SetCurrent(u8),
+        Advance,
+        AdvanceWith(bool, u8),
+        Back,
+        Remove(u8),
+        Clear,
+    }
+
+    fn op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            Just(Op::Push),
+            Just(Op::PushManual),
+            (0u8..8, 0u8..8).prop_map(|(n, o)| Op::ReplaceAuto(n, o)),
+            (0u8..16).prop_map(Op::SetCurrent),
+            Just(Op::Advance),
+            (any::<bool>(), 0u8..3).prop_map(|(s, r)| Op::AdvanceWith(s, r)),
+            Just(Op::Back),
+            (0u8..16).prop_map(Op::Remove),
+            Just(Op::Clear),
+        ]
+    }
+
+    fn repeat_of(n: u8) -> RepeatMode {
+        match n % 3 {
+            0 => RepeatMode::Off,
+            1 => RepeatMode::Track,
+            _ => RepeatMode::All,
+        }
+    }
+
+    /// Structural invariants that must hold after *every* operation, whatever
+    /// the sequence of calls.
+    fn assert_invariants(q: &Queue) {
+        let len = q.len();
+        assert_eq!(len, q.items().len(), "len() disagrees with items()");
+        if let Some(c) = q.current_index() {
+            assert!(c < len, "current index {c} out of bounds (len {len})");
+        }
+        assert!(
+            q.manual_count() <= len,
+            "manual_count {} exceeds len {len}",
+            q.manual_count()
+        );
+        assert_eq!(
+            q.current().is_some(),
+            q.current_index().is_some(),
+            "current() and current_index() disagree on presence"
+        );
+        if let Some(c) = q.current_index() {
+            assert_eq!(
+                q.current().map(|it| it.uri.as_str()),
+                q.items().get(c).map(|it| it.uri.as_str()),
+                "current() is not the item at current_index()"
+            );
+        }
+        assert_eq!(q.is_empty(), len == 0);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(3000))]
+
+        /// No sequence of queue operations may panic or leave the queue in a
+        /// state that violates its structural invariants.
+        #[test]
+        fn queue_invariants_hold_under_random_ops(
+            ops in proptest::collection::vec(op(), 0..50)
+        ) {
+            let mut q = Queue::new();
+            let mut n = 0usize;
+            assert_invariants(&q);
+            for o in ops {
+                match o {
+                    Op::Push => { n += 1; q.push(item(&format!("p{n}"))); }
+                    Op::PushManual => { n += 1; q.push_manual(item(&format!("m{n}"))); }
+                    Op::ReplaceAuto(k, off) => {
+                        let items: Vec<_> =
+                            (0..k as usize).map(|i| item(&format!("a{i}"))).collect();
+                        q.replace_auto(items, off as usize);
+                    }
+                    Op::SetCurrent(i) => q.set_current(i as usize),
+                    Op::Advance => { let _ = q.advance(); }
+                    Op::AdvanceWith(s, r) => { let _ = q.advance_with(s, repeat_of(r)); }
+                    Op::Back => { let _ = q.back(); }
+                    Op::Remove(i) => { let _ = q.remove(i as usize); }
+                    Op::Clear => q.clear(),
+                }
+                assert_invariants(&q);
+            }
+        }
+
+        /// clear() yields a fully empty queue regardless of prior state.
+        #[test]
+        fn clear_always_empties(ops in proptest::collection::vec(op(), 0..30)) {
+            let mut q = Queue::new();
+            let mut n = 0usize;
+            for o in ops {
+                match o {
+                    Op::Push | Op::PushManual => { n += 1; q.push(item(&format!("x{n}"))); }
+                    Op::ReplaceAuto(k, off) => {
+                        let items: Vec<_> =
+                            (0..k as usize).map(|i| item(&format!("a{i}"))).collect();
+                        q.replace_auto(items, off as usize);
+                    }
+                    _ => {}
+                }
+            }
+            q.clear();
+            prop_assert_eq!(q.len(), 0);
+            prop_assert!(q.is_empty());
+            prop_assert_eq!(q.current_index(), None);
+            prop_assert_eq!(q.manual_count(), 0);
+        }
+    }
 }

@@ -221,7 +221,7 @@ pub async fn resolve_playlist(http: &reqwest::Client, url: &str) -> Result<Strin
     }
 }
 
-fn parse_pls(text: &str) -> Option<String> {
+pub fn parse_pls(text: &str) -> Option<String> {
     // INI-ish: `File1=https://...`, `File2=...`
     for line in text.lines() {
         let line = line.trim();
@@ -237,7 +237,7 @@ fn parse_pls(text: &str) -> Option<String> {
     None
 }
 
-fn parse_m3u(text: &str) -> Option<String> {
+pub fn parse_m3u(text: &str) -> Option<String> {
     for line in text.lines() {
         let l = line.trim();
         if l.is_empty() || l.starts_with('#') {

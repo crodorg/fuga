@@ -45,7 +45,7 @@ const SAVED_FILENAME: &str = "youtube_saved.json";
 const LEGACY_SAVED_FILENAME: &str = "ytmusic_saved.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct SavedTrack {
+pub struct SavedTrack {
     id: String,
     title: String,
     #[serde(default)]
@@ -163,6 +163,7 @@ impl YouTubeSource {
                     "--no-playlist",
                     "--print",
                     "%(url)s",
+                    "--",
                     url.as_str(),
                 ],
                 YTDLP_TIMEOUT,
@@ -227,6 +228,7 @@ impl YouTubeSource {
                 "after_move:filepath",
                 "-o",
                 template.as_str(),
+                "--",
                 url.as_str(),
             ])
             .stdout(Stdio::piped())
@@ -311,6 +313,7 @@ impl YouTubeSource {
                     "--no-warnings",
                     "--no-playlist",
                     "--flat-playlist",
+                    "--",
                     url.as_str(),
                 ],
                 YTDLP_TIMEOUT,
@@ -320,10 +323,15 @@ impl YouTubeSource {
             .lines()
             .find(|l| !l.trim().is_empty())
             .ok_or_else(|| anyhow!("yt-dlp returned no metadata for {video_id}"))?;
-        let rec: YtSearchRecord =
-            serde_json::from_str(line).context("decode yt-dlp metadata json")?;
-        Ok(record_to_saved(&rec))
+        parse_search_record(line).context("decode yt-dlp metadata json")
     }
+}
+
+/// Parse one yt-dlp `--dump-json` JSON line into a `SavedTrack`. Pure (no I/O);
+/// the fuzz target drives it on arbitrary bytes and `lookup_metadata` reuses it.
+pub fn parse_search_record(line: &str) -> Result<SavedTrack> {
+    let rec: YtSearchRecord = serde_json::from_str(line)?;
+    Ok(record_to_saved(&rec))
 }
 
 fn load_saved(path: &PathBuf) -> Vec<SavedTrack> {
@@ -452,6 +460,7 @@ impl MusicSource for YouTubeSource {
                     "--flat-playlist",
                     "--dump-json",
                     "--no-warnings",
+                    "--",
                     q.as_str(),
                 ],
                 YTDLP_TIMEOUT,

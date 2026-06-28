@@ -55,6 +55,13 @@ pub struct Playlist {
     pub quality: String,
 }
 
+/// Parse the SomaFM `channels.json` body into the channel list. Pure (no I/O)
+/// so the fuzz target and tests can drive it on arbitrary input.
+pub fn parse_channels(raw: &str) -> Result<Vec<Channel>> {
+    let parsed: ChannelsRoot = serde_json::from_str(raw).context("parse channels.json")?;
+    Ok(parsed.channels)
+}
+
 pub struct SomaFmSource {
     cache_path: PathBuf,
     cache_ttl: Duration,
@@ -89,8 +96,7 @@ impl SomaFmSource {
             Some(s) => s,
             None => self.fetch_and_persist().await?,
         };
-        let parsed: ChannelsRoot = serde_json::from_str(&raw).context("parse channels.json")?;
-        *self.channels.write().await = parsed.channels;
+        *self.channels.write().await = parse_channels(&raw)?;
         Ok(())
     }
 
