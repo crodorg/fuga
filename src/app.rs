@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::{Event, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
-use futures::FutureExt;
 use mpd_client::client::{ConnectionEvent, ConnectionEvents, Subsystem};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -4566,7 +4565,7 @@ pub async fn run(
 async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
-    mut mpd_events: ConnectionEvents,
+    mpd_events: ConnectionEvents,
     mut wake_rx: UnboundedReceiver<()>,
     mut row_batch_rx: UnboundedReceiver<RowBatch>,
     mut spotify_events: UnboundedReceiver<crate::source::spotify::SpotifyEvent>,
@@ -4592,6 +4591,9 @@ async fn run_loop(
             }
         })
         .ok();
+    // Wrap in Option so the arm can disable itself if the stream ends (see
+    // recv_mpd) instead of busy-spinning on a terminated stream.
+    let mut mpd_events = Some(mpd_events);
     let mut tick = tick_interval();
     // Minimum interval between draws. At the default 30fps this never throttles
     // legitimate frames (steady-state dirty is <=4Hz), but it coalesces any
@@ -4734,9 +4736,9 @@ async fn run_loop(
                 Some(_) => {}
                 None => break,
             },
-            ev = mpd_events.next().fuse() => match ev {
+            ev = recv_mpd(&mut mpd_events) => match ev {
                 Some(e) => app.handle_mpd_event(e).await,
-                None => app.set_status("MPD event stream ended"),
+                None => app.set_status("MPD connection lost — local source paused"),
             },
             // `Some(..) =` rather than binding the whole Option: only handle
             // real items, never a phantom None. (The control-plane sender is
@@ -4779,11 +4781,45 @@ async fn run_loop(
 
 /// Helper that returns Pending if mpris isn't enabled, so the select arm just
 /// never fires on non-Linux / disabled builds.
+///
+/// Also parks (drops the receiver) the moment the channel closes. The mpris
+/// thread exits when it can't reach the D-Bus session bus (no bus on headless
+/// servers, plain SSH, minimal WMs, containers), which drops every event sender
+/// and closes this receiver. A closed `UnboundedReceiver::recv()` returns
+/// `None` *ready* on every poll, so without disabling the arm the `select!`
+/// loop busy-spins at ~100% CPU. Setting `*rx = None` routes subsequent polls to
+/// the `pending()` branch. Same closed-channel spin class as decisions.md
+/// 2026-06-24; this arm was the one that fix didn't cover (found 2026-06-28).
 async fn recv_mpris(
     rx: &mut Option<UnboundedReceiver<crate::mpris::MprisEvent>>,
 ) -> Option<crate::mpris::MprisEvent> {
     match rx.as_mut() {
-        Some(r) => r.recv().await,
+        Some(r) => {
+            let ev = r.recv().await;
+            if ev.is_none() {
+                *rx = None;
+            }
+            ev
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// MPD event-stream receiver with the same park-on-close guard as `recv_mpris`.
+/// `ConnectionEvents` ends if the MPD connection drops mid-session (service
+/// restart, TCP blip, crash); a `Stream` that has yielded `None` keeps yielding
+/// `None` ready, so polling it from the `select!` would busy-spin. On end we drop
+/// the stream so the arm parks — the local source stops updating but fuga keeps
+/// running for the other sources.
+async fn recv_mpd(ev: &mut Option<ConnectionEvents>) -> Option<ConnectionEvent> {
+    match ev.as_mut() {
+        Some(s) => {
+            let next = s.next().await;
+            if next.is_none() {
+                *ev = None;
+            }
+            next
+        }
         None => std::future::pending().await,
     }
 }
