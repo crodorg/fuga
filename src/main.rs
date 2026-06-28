@@ -303,6 +303,7 @@ async fn async_main(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> {
                     config.spotify.clone(),
                     spotify_event_tx.clone(),
                     browse_cache,
+                    data_dir.join("spotify_ratelimit.json"),
                 ));
                 dispatcher.register(spotify as Arc<dyn MusicSource>);
             }

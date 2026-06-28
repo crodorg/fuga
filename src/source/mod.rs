@@ -87,6 +87,12 @@ pub trait MusicSource: Send + Sync {
     async fn unsave(&self, _uri: &str) -> Result<()> {
         Ok(())
     }
+    /// Remaining cooldown if this source is currently rate-limited by its
+    /// backend, else `None`. Lets the UI freeze background polling / refreshes
+    /// and show an honest countdown instead of hammering a banned API.
+    fn rate_limit_remaining(&self) -> Option<std::time::Duration> {
+        None
+    }
 
     /// Seek the current track to an absolute position. Default: error.
     async fn seek(&self, _position: std::time::Duration) -> Result<()> {

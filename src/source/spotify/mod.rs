@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod cache;
+pub mod governor;
 pub mod metadata;
 pub mod player;
 pub mod raw;
@@ -49,6 +50,27 @@ pub struct SpotifySource {
     browse_cache: Arc<crate::source::spotify::cache::BrowseCache>,
 }
 
+/// Map an rspotify error into anyhow, engaging the rate-limit gate on a 429.
+/// The real `Retry-After` isn't reachable through rspotify's error type, so we
+/// record a short fallback cooldown; the header-bearing `raw::get_normalized`
+/// path (and the view poller) upgrade it to the true value within a cycle.
+fn classify_api_err(e: rspotify::ClientError) -> anyhow::Error {
+    if governor::is_rate_limit_err(&e) {
+        // Do NOT set the gate here. A direct rspotify call can't read the real
+        // Retry-After (its error buries a different-version reqwest Response),
+        // so a guessed cooldown would "poison" the gate short and make the
+        // header-reading `raw::get_normalized` calls fail fast before they ever
+        // measure the true window. Only those calls set the gate; here we just
+        // surface the known remaining time (or a short hint if none is set).
+        let rem = governor::instance()
+            .remaining_block()
+            .unwrap_or(governor::FALLBACK_COOLDOWN);
+        governor::RateLimited(rem).into()
+    } else {
+        anyhow::Error::new(e)
+    }
+}
+
 impl SpotifySource {
     pub fn new(
         api: Arc<Mutex<AuthCodePkceSpotify>>,
@@ -56,7 +78,11 @@ impl SpotifySource {
         config: SpotifyConfig,
         events_tx: UnboundedSender<SpotifyEvent>,
         browse_cache: Arc<crate::source::spotify::cache::BrowseCache>,
+        ratelimit_path: std::path::PathBuf,
     ) -> Self {
+        // Initialize the process-global Web-API governor with its persistence
+        // path so a multi-hour rate-limit cooldown survives a restart.
+        governor::configure(ratelimit_path);
         Self {
             api,
             http,
@@ -65,6 +91,22 @@ impl SpotifySource {
             events_tx,
             browse_cache,
         }
+    }
+
+    /// Run an rspotify-direct Web API call through the rate-limit governor:
+    /// fail fast while a cooldown is active, pace the call start, and on a 429
+    /// record a fallback cooldown (rspotify buries the `Retry-After` header in
+    /// an error type we can't read — the real value is captured by the
+    /// header-bearing `raw::get_normalized` path and the view poller).
+    async fn governed<T, F>(&self, fut: F) -> Result<T>
+    where
+        F: std::future::Future<Output = std::result::Result<T, rspotify::ClientError>>,
+    {
+        governor::instance()
+            .enter()
+            .await
+            .map_err(anyhow::Error::new)?;
+        fut.await.map_err(classify_api_err)
     }
 
     async fn ensure_player(&self) -> Result<()> {
@@ -469,7 +511,15 @@ impl SpotifySource {
         // not the followed/curated ones (which the user can't modify).
         if base_path == "spotify:view:saved_playlists_picker" {
             let api = self.api.lock().await;
-            let me = api.current_user().await.context("current_user")?;
+            governor::instance()
+                .enter()
+                .await
+                .map_err(anyhow::Error::new)?;
+            let me = api
+                .current_user()
+                .await
+                .map_err(classify_api_err)
+                .context("current_user")?;
             let me_id = me.id.id().to_string();
             let mut out: Vec<Entry> = Vec::new();
             let mut s = api.current_user_playlists();
@@ -521,6 +571,13 @@ impl SpotifySource {
             return Box::pin(self.browse_uncached(&format!("spotify:playlist:{pid}"))).await;
         }
         let api = self.api.lock().await;
+        // Gate + pace this browse through the rate-limit governor (fail fast if
+        // a cooldown is active). The per-arm paginator error handlers below
+        // engage the gate on a 429 that slips through mid-pagination.
+        governor::instance()
+            .enter()
+            .await
+            .map_err(anyhow::Error::new)?;
         match base_path {
             "" | "spotify:" => self.browse_root().await,
             "spotify:view:saved_albums" => {
@@ -530,7 +587,9 @@ impl SpotifySource {
                     if out.len() >= PAGE_LIMIT {
                         break;
                     }
-                    let saved = next.context("paginated saved_albums")?;
+                    let saved = next
+                        .map_err(classify_api_err)
+                        .context("paginated saved_albums")?;
                     let a = &saved.album;
                     let art = a
                         .images
@@ -578,7 +637,9 @@ impl SpotifySource {
                     if out.len() >= PAGE_LIMIT {
                         break;
                     }
-                    let saved = next.context("paginated saved_shows")?;
+                    let saved = next
+                        .map_err(classify_api_err)
+                        .context("paginated saved_shows")?;
                     let sh = &saved.show;
                     let art = sh
                         .images
@@ -618,28 +679,47 @@ impl SpotifySource {
                 Ok(out)
             }
             "spotify:view:saved_tracks" => {
+                use rspotify::model::{Page, SavedTrack};
                 let mut out = Vec::new();
-                let mut s = api.current_user_saved_tracks(None).skip(offset);
-                while let Some(next) = s.next().await {
-                    if out.len() >= PAGE_LIMIT {
+                let mut page_off = offset;
+                // Paged via raw::get_normalized (not rspotify's paginator) so a
+                // 429 reads the real Retry-After header and sets an accurate
+                // gate — a direct paginator can only guess a fallback.
+                while out.len() < PAGE_LIMIT {
+                    let page: Page<SavedTrack> = raw::get_normalized(
+                        &api,
+                        &self.http,
+                        "me/tracks",
+                        &[
+                            ("limit", raw::SAFE_LIMIT.to_string()),
+                            ("offset", page_off.to_string()),
+                        ],
+                    )
+                    .await
+                    .context("paginated saved_tracks")?;
+                    let got = page.items.len();
+                    for saved in &page.items {
+                        let t = &saved.track;
+                        let mut it = track_to_item(t);
+                        it.display.sort_hint = Some(saved.added_at.timestamp());
+                        out.push(Entry {
+                            uri: it.uri.clone(),
+                            label: format!(
+                                "{} — {}",
+                                it.display.artist.as_deref().unwrap_or(""),
+                                it.display.title
+                            ),
+                            kind: EntryKind::Track,
+                            display: Some(it.display),
+                        });
+                    }
+                    if got == 0 || page.next.is_none() {
                         break;
                     }
-                    let saved = next.context("paginated saved_tracks")?;
-                    let t = &saved.track;
-                    let mut it = track_to_item(t);
-                    it.display.sort_hint = Some(saved.added_at.timestamp());
-                    out.push(Entry {
-                        uri: it.uri.clone(),
-                        label: format!(
-                            "{} — {}",
-                            it.display.artist.as_deref().unwrap_or(""),
-                            it.display.title
-                        ),
-                        kind: EntryKind::Track,
-                        display: Some(it.display),
-                    });
+                    page_off += got;
                 }
-                if out.len() == PAGE_LIMIT {
+                if out.len() >= PAGE_LIMIT {
+                    out.truncate(PAGE_LIMIT);
                     out.push(load_more_entry(base_path, offset + PAGE_LIMIT));
                 }
                 Ok(out)
@@ -752,6 +832,7 @@ impl SpotifySource {
                 let followed_page = api
                     .current_user_followed_artists(None, Some(50))
                     .await
+                    .map_err(classify_api_err)
                     .context("followed_artists")?;
                 let mut by_id: std::collections::HashMap<String, FullArtist> =
                     std::collections::HashMap::new();
@@ -803,7 +884,12 @@ impl SpotifySource {
                                 by_id.entry(full.id.to_string()).or_insert(full);
                             }
                         }
-                        Err(e) => tracing::warn!("artists batch: {e:?}"),
+                        Err(e) => {
+                            if governor::is_rate_limit_err(&e) {
+                                break;
+                            }
+                            tracing::warn!("artists batch: {e:?}");
+                        }
                     }
                 }
                 // 4) Build entries, alpha sorted.
@@ -1734,18 +1820,36 @@ impl MusicSource for SpotifySource {
             // Total liked-song count via a 1-item page — a cheap change token
             // (no per-track hydration). Add-then-remove nets the same count
             // and is missed; manual refresh (`r`) covers that rare case.
-            let page = api
-                .current_user_saved_tracks_manual(None, Some(1), Some(0))
-                .await
-                .ok()?;
+            // Routed through `raw::get_normalized` so the poll shares the
+            // rate-limit governor and — being the regular header-bearing call
+            // — reads the real `Retry-After` on a 429 to set an accurate gate.
+            let page: rspotify::model::Page<rspotify::model::SavedTrack> = raw::get_normalized(
+                &api,
+                &self.http,
+                "me/tracks",
+                &[("limit", "1".to_string()), ("offset", "0".to_string())],
+            )
+            .await
+            .ok()?;
             return Some(format!("n={}", page.total));
         }
         if path.starts_with("spotify:playlist:") {
             // Web API snapshot_id changes on any edit. `fields=snapshot_id`
             // keeps the response tiny.
             let pid = rspotify::model::PlaylistId::from_id_or_uri(path).ok()?;
-            let pl = api.playlist(pid, Some("snapshot_id"), None).await.ok()?;
-            return Some(pl.snapshot_id);
+            #[derive(serde::Deserialize)]
+            struct Snapshot {
+                snapshot_id: String,
+            }
+            let snap: Snapshot = raw::get_normalized(
+                &api,
+                &self.http,
+                &format!("playlists/{}", pid.id()),
+                &[("fields", "snapshot_id".to_string())],
+            )
+            .await
+            .ok()?;
+            return Some(snap.snapshot_id);
         }
         None
     }
@@ -1775,6 +1879,10 @@ impl MusicSource for SpotifySource {
         }
         const BATCH: usize = 50;
         let api = self.api.lock().await;
+        if let Err(e) = governor::instance().enter().await {
+            let _ = tx.send(Err(anyhow::Error::new(e))).await;
+            return;
+        }
         let mut all: Vec<Entry> = Vec::with_capacity(PAGE_LIMIT);
         let mut batch: Vec<Entry> = Vec::with_capacity(BATCH);
         let mut s = api.current_user_saved_albums(None).skip(offset);
@@ -1789,7 +1897,7 @@ impl MusicSource for SpotifySource {
                         let _ = tx.send(Ok(std::mem::take(&mut batch))).await;
                     }
                     let _ = tx
-                        .send(Err(anyhow::Error::new(e).context("paginated saved_albums")))
+                        .send(Err(classify_api_err(e).context("paginated saved_albums")))
                         .await;
                     return;
                 }
@@ -1932,6 +2040,10 @@ impl MusicSource for SpotifySource {
         }
     }
 
+    fn rate_limit_remaining(&self) -> Option<std::time::Duration> {
+        governor::instance().remaining_block()
+    }
+
     async fn set_volume(&self, vol: u8) -> Result<()> {
         if let Some(p) = self.player.lock().await.as_ref() {
             p.set_volume(vol);
@@ -1952,8 +2064,8 @@ impl MusicSource for SpotifySource {
         // rspotify's `library_contains` uses the new endpoint.
         let id = TrackId::from_id_or_uri(uri).context("track id")?;
         let api = self.api.lock().await;
-        let res: Vec<bool> = api
-            .library_contains([rspotify::model::LibraryId::Track(id)])
+        let res: Vec<bool> = self
+            .governed(api.library_contains([rspotify::model::LibraryId::Track(id)]))
             .await
             .context("library_contains")?;
         Ok(res.into_iter().next().unwrap_or(false))
@@ -1965,7 +2077,7 @@ impl MusicSource for SpotifySource {
         }
         let id = TrackId::from_id_or_uri(uri).context("track id")?;
         let api = self.api.lock().await;
-        api.library_add([rspotify::model::LibraryId::Track(id)])
+        self.governed(api.library_add([rspotify::model::LibraryId::Track(id)]))
             .await
             .context("library_add")?;
         Ok(())
@@ -1977,7 +2089,7 @@ impl MusicSource for SpotifySource {
         }
         let id = TrackId::from_id_or_uri(uri).context("track id")?;
         let api = self.api.lock().await;
-        api.library_remove([rspotify::model::LibraryId::Track(id)])
+        self.governed(api.library_remove([rspotify::model::LibraryId::Track(id)]))
             .await
             .context("library_remove")?;
         Ok(())
@@ -1995,7 +2107,10 @@ impl MusicSource for SpotifySource {
 
     async fn list_devices(&self) -> Result<Vec<DeviceEntry>> {
         let api = self.api.lock().await;
-        let devs = api.device().await.context("Spotify devices")?;
+        let devs = self
+            .governed(api.device())
+            .await
+            .context("Spotify devices")?;
         Ok(devs
             .into_iter()
             .filter_map(|d| {
@@ -2040,7 +2155,7 @@ impl MusicSource for SpotifySource {
         let pid = PlaylistId::from_id_or_uri(playlist_uri).context("playlist id")?;
         let tid = TrackId::from_id_or_uri(track_uri).context("track id")?;
         let api = self.api.lock().await;
-        api.playlist_add_items(pid, [PlayableId::Track(tid)], None)
+        self.governed(api.playlist_add_items(pid, [PlayableId::Track(tid)], None))
             .await
             .context("playlist_add_items")?;
         Ok(())
@@ -2051,15 +2166,19 @@ impl MusicSource for SpotifySource {
         let pid = PlaylistId::from_id_or_uri(playlist_uri).context("playlist id")?;
         let tid = TrackId::from_id_or_uri(track_uri).context("track id")?;
         let api = self.api.lock().await;
-        api.playlist_remove_all_occurrences_of_items(pid, [PlayableId::Track(tid)], None)
-            .await
-            .context("playlist_remove_all_occurrences_of_items")?;
+        self.governed(api.playlist_remove_all_occurrences_of_items(
+            pid,
+            [PlayableId::Track(tid)],
+            None,
+        ))
+        .await
+        .context("playlist_remove_all_occurrences_of_items")?;
         Ok(())
     }
 
     async fn transfer_to_device(&self, device_id: &str) -> Result<()> {
         let api = self.api.lock().await;
-        api.transfer_playback(device_id, Some(true))
+        self.governed(api.transfer_playback(device_id, Some(true)))
             .await
             .context("Spotify transfer_playback")?;
         Ok(())

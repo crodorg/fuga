@@ -18,9 +18,7 @@ use rspotify::AuthCodePkceSpotify;
 use rspotify::clients::BaseClient;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use std::sync::OnceLock;
-use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use std::time::Duration;
 
 /// Conservative per-page limit for Spotify list endpoints. Different
 /// endpoints accept different maxes (some 50, some 100, some 20), and
@@ -29,35 +27,16 @@ use tokio::sync::Mutex;
 /// pagination instead of asking for one big page.
 pub const SAFE_LIMIT: usize = 20;
 
-/// Global minimum interval between any two Spotify Web API calls.
-/// Mirrors spotatui's `SPOTIFY_API_MIN_INTERVAL` — prevents burst
-/// patterns from triggering 429 cascades on shared client_ids.
-const API_MIN_INTERVAL: Duration = Duration::from_millis(250);
-
-static API_PACING: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
-
-/// Block until the per-process pacing interval has elapsed since the last
-/// API call. Updates the timestamp before returning so back-to-back callers
-/// serialize properly.
-async fn pace_api_call() {
-    let lock = API_PACING.get_or_init(|| Mutex::new(None));
-    let mut last = lock.lock().await;
-    if let Some(prev) = *last {
-        let elapsed = prev.elapsed();
-        if elapsed < API_MIN_INTERVAL {
-            tokio::time::sleep(API_MIN_INTERVAL - elapsed).await;
-        }
-    }
-    *last = Some(Instant::now());
-}
-
 /// GET <https://api.spotify.com/v1/{path}>?{query}, normalize the JSON,
 /// then deserialize into `T`.
 ///
-/// Resilience layers (mirrors spotatui):
-/// - 250ms global pacing between API calls (avoid burst 429s)
+/// Resilience layers:
+/// - routed through the [`governor`](super::governor): ≥250ms pacing + a
+///   fail-fast gate that returns immediately while a rate-limit window is open
 /// - 401 → refresh token, retry once
-/// - 429 → honor `Retry-After`, retry up to 3 times
+/// - 429 → record the real `Retry-After` in the governor and return
+///   [`RateLimited`](super::governor::RateLimited); never sleep inline (the
+///   value can be hours)
 /// - transient connect/timeout/request errors → backoff, retry up to 3 times
 ///
 /// Uses a fresh `reqwest::Client` (not the caller's `self.http`) so the
@@ -77,7 +56,10 @@ pub async fn get_normalized<T: DeserializeOwned>(
 
     loop {
         let token = current_token(api).await?;
-        pace_api_call().await;
+        super::governor::instance()
+            .enter()
+            .await
+            .map_err(anyhow::Error::new)?;
         let resp_result = http.get(url.clone()).bearer_auth(&token).send().await;
 
         let resp = match resp_result {
@@ -121,17 +103,21 @@ pub async fn get_normalized<T: DeserializeOwned>(
             continue;
         }
 
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt + 1 < MAX_ATTEMPTS {
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            // Record the real Retry-After (this is the one transport that can
+            // read the header) and fail fast — never sleep inline; the value
+            // can be hours. The governor gates every other call until it
+            // passes, and persists it across restarts.
             let retry_after = resp
                 .headers()
                 .get("retry-after")
                 .and_then(|h| h.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(1)
+                .unwrap_or(30)
                 .max(1);
-            tokio::time::sleep(Duration::from_secs(retry_after + u64::from(attempt))).await;
-            attempt += 1;
-            continue;
+            let d = Duration::from_secs(retry_after);
+            super::governor::instance().note_rate_limited(d);
+            return Err(super::governor::RateLimited(d).into());
         }
 
         let body = resp.text().await.unwrap_or_default();
@@ -202,6 +188,10 @@ async fn no_body_method(
     let mut refreshed = false;
     loop {
         let token = current_token(api).await?;
+        super::governor::instance()
+            .enter()
+            .await
+            .map_err(anyhow::Error::new)?;
         let resp = http
             .request(method.clone(), url.clone())
             .bearer_auth(&token)
@@ -217,6 +207,18 @@ async fn no_body_method(
             api.refresh_token().await.context("spotify token refresh")?;
             refreshed = true;
             continue;
+        }
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|h| h.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(30)
+                .max(1);
+            let d = Duration::from_secs(retry_after);
+            super::governor::instance().note_rate_limited(d);
+            return Err(super::governor::RateLimited(d).into());
         }
         let body = resp.text().await.unwrap_or_default();
         return Err(anyhow!(

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Spotify library views failing to load ("rate-limited" / "load failed")** —
+  fuga could overrun Spotify's Web API request limit, after which the library
+  stopped loading entirely; worse, retrying during the cooldown made Spotify
+  extend it, so a brief limit could snowball into hours. fuga now paces all of
+  its Web API calls, stops calling the moment it's rate-limited — showing how
+  long until it can retry instead of a generic failure — and remembers that
+  cooldown across restarts rather than immediately re-triggering it. Background
+  change-polling is also far less frequent and pauses entirely while fuga isn't
+  the focused window, so steady listening rarely approaches the limit.
 - **Spotify playback stopped after about ten songs** — a track would halt at
   0:00 and refuse to advance. fuga drives the librespot player directly and
   manages its own queue, but it also ran librespot's Spotify Connect controller

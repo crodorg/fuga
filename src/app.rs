@@ -287,6 +287,11 @@ pub struct App {
     pub command_buffer: String,
     pub command_input_focused: bool,
 
+    /// Terminal/window focus. Used to pause background view-polling while the
+    /// user has tabbed away (long background listening is the dominant idle
+    /// case). Defaults true so terminals that don't report focus keep polling.
+    pub window_focused: bool,
+
     pub theme: Theme,
     /// User-selected palette before per-source accent swap. `set_mode` rebuilds
     /// `theme = base_theme.with_source_accent(mode)` each toggle so the source
@@ -552,6 +557,7 @@ impl App {
             search_top: 0,
             command_buffer: String::new(),
             command_input_focused: false,
+            window_focused: true,
             theme,
             base_theme,
             active_source,
@@ -707,7 +713,14 @@ impl App {
             Ok(_) => {} // empty batch — finished sentinel or no-op page
             Err(e) => {
                 state.streaming = false;
-                let msg = format!("load failed: {e}");
+                // A rate-limit error anywhere in the chain gets a clean,
+                // actionable message (with the countdown) instead of the raw
+                // "load failed: …" wrapper.
+                let msg = e
+                    .chain()
+                    .find_map(|c| c.downcast_ref::<crate::source::spotify::governor::RateLimited>())
+                    .map(|rl| rl.to_string())
+                    .unwrap_or_else(|| format!("load failed: {e}"));
                 self.set_status(msg);
                 return;
             }
@@ -2433,6 +2446,14 @@ impl App {
         if let (Some(uri), true) = (descend_uri, top_is_entries) {
             let scheme = uri.split(':').next().unwrap_or("");
             if let Some(src) = self.dispatcher.get(scheme).cloned() {
+                if let Some(rem) = src.rate_limit_remaining() {
+                    self.set_status(format!(
+                        "Spotify rate-limited — retry in {}",
+                        crate::source::spotify::governor::fmt_dur(rem)
+                    ));
+                    self.dirty = true;
+                    return;
+                }
                 src.invalidate(&uri).await;
                 let view_id = if let Some(s) = self.category_states.get_mut(&cat) {
                     if let Some(LibraryView::Entries { entries, .. }) = s.stack.last_mut() {
@@ -2483,6 +2504,11 @@ impl App {
     /// it in `poll_result`. Spawned so the Spotify API lock — which a large
     /// browse can hold for seconds — never stalls the event loop.
     fn spawn_view_poll(&self) {
+        // Don't poll for external edits while tabbed away — the user isn't
+        // looking, and it's the dominant idle source of Web-API calls.
+        if !self.window_focused {
+            return;
+        }
         let cat = self.active_category();
         if !cat.is_browse() {
             return;
@@ -2501,6 +2527,11 @@ impl App {
         let Some(src) = self.dispatcher.get("spotify").cloned() else {
             return;
         };
+        // Don't poll while rate-limited — it would re-ping a banned API every
+        // cycle and risk extending the cooldown.
+        if src.rate_limit_remaining().is_some() {
+            return;
+        }
         let slot = self.poll_result.clone();
         tokio::spawn(async move {
             if let Some(snap) = src.view_snapshot(&path).await {
@@ -3393,12 +3424,14 @@ impl App {
         self.tick_counter = self.tick_counter.wrapping_add(1);
         // Open-view change polling (Spotify Liked / playlists). Drain any
         // snapshot a background poll produced, then kick a fresh poll every
-        // ~20s (80 ticks * 250ms). Detects external edits and auto-refreshes.
+        // ~60s (240 ticks * 250ms) — long enough that this background change
+        // detector is a non-factor for the Web-API rate limit, still responsive
+        // enough for external edits. Skipped entirely while tabbed away.
         let polled = self.poll_result.lock().ok().and_then(|mut g| g.take());
         if let Some((path, snap)) = polled {
             self.handle_view_poll(path, snap).await;
         }
-        if self.tick_counter.is_multiple_of(80) {
+        if self.tick_counter.is_multiple_of(240) {
             self.spawn_view_poll();
         }
         // Repaint when any browse view is mid-stream so the animated
@@ -4581,6 +4614,9 @@ async fn run_loop(
             _ = app.shutdown.cancelled() => break,
             ev = input_rx.recv() => match ev {
                 Some(Event::Key(k)) => {
+                    // Any key implies the window is focused — a robust fallback
+                    // for terminals that miss FocusGained.
+                    app.window_focused = true;
                     // Drop auto-repeat key events: holding +/- or H/L should
                     // act per-press, not blast actions at the OS repeat rate.
                     // Press + Release pass; Repeat ignored.
@@ -4684,9 +4720,16 @@ async fn run_loop(
                 // outside tmux the terminal keeps art resident across focus, so
                 // a rebuild would be needless re-encode work. See decisions.md
                 // 2026-06-26.
-                Some(Event::FocusGained) if std::env::var_os("TMUX").is_some() => {
-                    app.invalidate_image_protocols();
+                Some(Event::FocusGained) => {
+                    app.window_focused = true;
+                    if std::env::var_os("TMUX").is_some() {
+                        app.invalidate_image_protocols();
+                    }
                     app.dirty = true;
+                }
+                Some(Event::FocusLost) => {
+                    // Pause background view-polling while tabbed away.
+                    app.window_focused = false;
                 }
                 Some(_) => {}
                 None => break,
