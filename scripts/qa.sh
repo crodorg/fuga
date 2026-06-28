@@ -117,46 +117,42 @@ cmd_mutants() {
 cmd_safety() {
 	say "safety (miri + sanitizers + careful)"
 	need_nightly safety || return 0
-	echo "  -- miri"
-	cargo +nightly miri test || echo "  ! miri found issues (or needs: rustup component add miri)"
-	echo "  -- AddressSanitizer"
-	RUSTFLAGS="-Zsanitizer=address" cargo +nightly test --target "$(rustc -vV | sed -n 's/host: //p')" \
+	host="$(rustc -vV | sed -n 's/host: //p')"
+	# Scope to --lib and skip the proptest module: 3000-case proptests are far too
+	# slow under interpretation/instrumentation. The pure-logic surface (queue,
+	# config, parsers) is what these tools can meaningfully check — all unsafe in
+	# fuga is FFI (term_probe libc, macos Cocoa), exercised by `stress`, not here.
+	echo "  -- miri (lib, skip proptest; disable-isolation for fs/time shims)"
+	MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri test --lib -- --skip prop \
+		|| echo "  ! miri found issues (or needs: rustup component add miri rust-src)"
+	echo "  -- AddressSanitizer (lib, build-std; skip proptest)"
+	ASAN_OPTIONS="detect_leaks=0:detect_odr_violation=0" RUSTFLAGS="-Zsanitizer=address" \
+		cargo +nightly test --lib -Zbuild-std --target "$host" -- --skip prop \
 		|| echo "  ! ASan run failed/flagged"
-	echo "  -- ThreadSanitizer"
-	RUSTFLAGS="-Zsanitizer=thread" cargo +nightly test --target "$(rustc -vV | sed -n 's/host: //p')" \
+	echo "  -- ThreadSanitizer (lib, build-std; skip proptest)"
+	RUSTFLAGS="-Zsanitizer=thread" \
+		cargo +nightly test --lib -Zbuild-std --target "$host" -- --skip prop \
 		|| echo "  ! TSan run failed/flagged"
 	if have cargo-careful; then
-		echo "  -- cargo-careful"; cargo +nightly careful test || echo "  ! careful flagged"
+		echo "  -- cargo-careful (full suite)"; cargo +nightly careful test || echo "  ! careful flagged"
 	fi
 }
 
 cmd_stress() {
-	say "stress (soak ${SOAK_SECS}s + RSS watch)"
+	say "stress (PTY soak — drives the real binary, watches RSS)"
+	# tests/soak.rs spawns the release binary in a pseudo-terminal, answers the
+	# startup capability probe (so init doesn't block in n_tty_read), then drives
+	# navigation + resize/SIGWINCH for many iterations while watching for panics,
+	# early exit, shutdown hangs, and RSS growth. Ignored by the normal gate.
 	cargo build --release
-	bin="$ROOT/target/release/fuga"
-	echo "  NOTE: fuga probes the terminal at startup (term_probe.rs) and blocks in"
-	echo "        n_tty_read with no attached terminal. A meaningful TUI soak needs a"
-	echo "        real terminal or a PTY harness (rexpect / ratatui-testlib, wave 4)."
-	echo "        SIGWINCH/resize fuzzing: drive it under tmux with a 'resize-pane' loop."
-	if ! have script; then
-		echo "  ! 'script' (util-linux) not found — cannot allocate a PTY here. Skipping soak."
-		return 0
-	fi
-	echo "  -- best-effort PTY soak (may exit early if services/terminal unavailable)"
-	( script -qc "$bin" /dev/null >/dev/null 2>&1 & echo $! >/tmp/fuga-soak.pid ) || true
-	pid=$(cat /tmp/fuga-soak.pid 2>/dev/null || echo "")
-	[ -n "$pid" ] || { echo "  ! could not start soak"; return 0; }
-	i=0; max=0
-	while [ "$i" -lt "$SOAK_SECS" ]; do
-		if ! kill -0 "$pid" 2>/dev/null; then
-			echo "  soak process exited at ${i}s (expected without a real terminal)"; break
-		fi
-		rss=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')
-		if [ -n "${rss:-}" ] && [ "$rss" -gt "$max" ] 2>/dev/null; then max=$rss; fi
-		i=$((i+2)); sleep 2
-	done
-	kill "$pid" 2>/dev/null || true
-	if [ "$max" -gt 0 ] 2>/dev/null; then echo "  peak RSS: $((max/1024)) MiB"; fi
+	step="${FUGA_SOAK_STEP_MS:-15}"
+	# Derive iteration count from SOAK_SECS (one keystroke per step).
+	iters="${FUGA_SOAK_ITERS:-$(( SOAK_SECS * 1000 / step ))}"
+	echo "  -- soak: ${iters} iters @ ${step}ms (~${SOAK_SECS}s) on target/release/fuga"
+	FUGA_SOAK_BIN="$ROOT/target/release/fuga" \
+	FUGA_SOAK_ITERS="$iters" \
+	FUGA_SOAK_STEP_MS="$step" \
+		cargo test --release --test soak -- --ignored --nocapture
 }
 
 cmd_min() {
@@ -192,12 +188,13 @@ qa.sh — hardening / QA runner (layered on `make check`)
   fuzz      run cargo-fuzz targets (FUZZ_SECS=60)     [security: input surface]
   mutants   cargo-mutants — grade the test suite
   safety    miri + sanitizers + cargo-careful         [security: memory/UB]
-  stress    soak + RSS watch (SOAK_SECS=120)
+  stress    PTY soak: drive the real binary + RSS watch (SOAK_SECS=120) [stability]
   min       cargo-bloat + llvm-lines + modules
   gate      make check (the existing commit/push gate)
   all       CI-safe: gate + audit
 
-  fuzz/safety need rustup+nightly; fuzz also needs a src/lib.rs (fuga is bin-only).
+  fuzz/safety need rustup+nightly; safety's sanitizers also need rust-src
+  (rustup component add rust-src --toolchain nightly) for -Zbuild-std.
 EOF
 }
 

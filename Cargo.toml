@@ -74,6 +74,8 @@ codegen-units = 1
 strip = true
 
 [dev-dependencies]
+libc = "0.2"
+portable-pty = "0.9.0"
 proptest = "1"
 
 # fuzz/ is a workspace member so it shares this crate's resolved Cargo.lock —
