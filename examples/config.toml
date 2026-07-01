@@ -45,6 +45,11 @@ radio_split         = true        # true (default) → separate Radio + SomaFM t
 # SomaFM, a single Radio column for internet radio. Views with no track
 # columns (albums, artists, playlists, search) skip it.
 column_headers      = true        # false → bare top border
+# With inline thumbnails on, each row is 2 cells tall. When true, column
+# text (artist / song / album, and album/artist names) wraps across both
+# rows so long titles stay fully readable; when false it truncates to one
+# line with `…`. No effect when thumbnails are off (rows are 1 cell).
+wrap_columns        = true        # false → single-line, truncated
 
 # Per-source tab list. `t` cycles the active source and the tab bar
 # swaps to that source's list. Map keys are source schemes; values are

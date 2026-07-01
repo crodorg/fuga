@@ -822,6 +822,7 @@ fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option
         right_title,
         show_column_headers: app.column_headers,
         columns: columns_for(cat, &rows),
+        wrap_columns: app.wrap_columns,
     };
     render_thumb_list(
         f,
@@ -911,6 +912,7 @@ fn render_queue(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option<
         show_column_headers: app.column_headers,
         // Queue is cross-source; keep the standard Artist/Song/Album/Time.
         columns: ColumnLayout::standard(),
+        wrap_columns: app.wrap_columns,
     };
     render_thumb_list(
         f,
@@ -1028,6 +1030,7 @@ fn render_search(app: &mut App, f: &mut Frame<'_>, area: Rect) {
         // Search rows are plain-label (no track_cols), so the header never
         // draws; the layout is unused but must be provided.
         columns: ColumnLayout::standard(),
+        wrap_columns: app.wrap_columns,
     };
     render_thumb_list(
         f,

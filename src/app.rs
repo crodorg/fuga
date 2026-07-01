@@ -256,6 +256,9 @@ pub struct App {
     /// `[ui] column_headers`. When true, track-columned lists draw an
     /// `Artist / Song / Album / Time` header bar on the box's top border.
     pub column_headers: bool,
+    /// `[ui] wrap_columns`. When true, 2-cell (icon-mode) rows wrap each
+    /// column's text across both rows instead of truncating.
+    pub wrap_columns: bool,
     /// Vertical-axis size knob for the now-playing art panel, from
     /// `[ui] art_height_pct`. 100 = full available height. Clamped to
     /// [20, 100] at use.
@@ -532,6 +535,7 @@ impl App {
         term: Term,
         thumb_cells: u16,
         column_headers: bool,
+        wrap_columns: bool,
         art_height_pct: u16,
         art_width_pct: u16,
         keymap: Keymap,
@@ -575,6 +579,7 @@ impl App {
             row_batch_tx,
             thumb_cells,
             column_headers,
+            wrap_columns,
             art_height_pct,
             art_width_pct,
             thumb_cycle,

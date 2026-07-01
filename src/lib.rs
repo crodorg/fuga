@@ -302,6 +302,7 @@ pub async fn run_app(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> 
 
     let thumb_cells = config.ui.thumb_cells;
     let column_headers = config.ui.column_headers;
+    let wrap_columns = config.ui.wrap_columns;
     let art_height_pct = config.ui.art_height_pct;
     let art_width_pct = config.ui.art_width_pct;
     let keymap = crate::keys::Keymap::from_config(&config.keybindings);
@@ -350,6 +351,7 @@ pub async fn run_app(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> 
         term,
         thumb_cells,
         column_headers,
+        wrap_columns,
         art_height_pct,
         art_width_pct,
         keymap,

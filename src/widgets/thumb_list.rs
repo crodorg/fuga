@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::text::Line;
 use ratatui::widgets::{
-    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
 };
 use std::time::Duration;
 
@@ -22,6 +22,8 @@ use crate::art_cache::ArtCache;
 use crate::dispatch::Dispatcher;
 use crate::term_probe::ThumbMode;
 use crate::types::ArtSize;
+// Re-exported so callers (ui.rs) keep the `thumb_list::ColumnLayout` path.
+pub use crate::widgets::columns::{ColField, ColumnLayout};
 
 /// Substring match (case-insensitive) on a row's user-visible text. Returns
 /// true if `q_lower` is found in label, or in any of the column fields when
@@ -86,150 +88,6 @@ pub struct TrackColumns {
     pub duration: Option<Duration>,
 }
 
-/// Which `TrackColumns` field a variable-width column pulls from.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ColField {
-    Artist,
-    Title,
-    Album,
-}
-
-/// A variable-width column: which field it shows, its header label, and how
-/// it claims horizontal space. The right-aligned fixed duration column is
-/// not modelled here — it's appended by `ColumnLayout::duration`.
-#[derive(Clone)]
-pub struct Col {
-    pub field: ColField,
-    pub label: &'static str,
-    /// `Some(pct)` → `Constraint::Percentage`; `None` → `Constraint::Fill(1)`
-    /// (claim all remaining width). Fill lets one column stretch edge-to-edge
-    /// (podcast title, radio station name).
-    pub pct: Option<u16>,
-}
-
-/// Per-source column scheme shared by the header bar and the row renderer so
-/// the two always align. `cols` are the variable-width columns in display
-/// order; `duration` appends the fixed 6-cell right-aligned `Time` column.
-#[derive(Clone)]
-pub struct ColumnLayout {
-    pub cols: Vec<Col>,
-    pub duration: bool,
-}
-
-impl ColumnLayout {
-    /// Artist | Song | Album | Time — local, Spotify tracks, the queue.
-    pub fn standard() -> Self {
-        Self {
-            cols: vec![
-                Col {
-                    field: ColField::Artist,
-                    label: "Artist",
-                    pct: Some(30),
-                },
-                Col {
-                    field: ColField::Title,
-                    label: "Song",
-                    pct: Some(35),
-                },
-                Col {
-                    field: ColField::Album,
-                    label: "Album",
-                    pct: Some(30),
-                },
-            ],
-            duration: true,
-        }
-    }
-
-    /// Artist | Song | Time — YouTube when no album metadata is present; the
-    /// two text columns widen to reclaim the dropped Album column.
-    pub fn no_album() -> Self {
-        Self {
-            cols: vec![
-                Col {
-                    field: ColField::Artist,
-                    label: "Artist",
-                    pct: Some(40),
-                },
-                Col {
-                    field: ColField::Title,
-                    label: "Song",
-                    pct: None,
-                },
-            ],
-            duration: true,
-        }
-    }
-
-    /// Podcast | Time — episode name fills icon→Time.
-    pub fn podcast() -> Self {
-        Self {
-            cols: vec![Col {
-                field: ColField::Title,
-                label: "Podcast",
-                pct: None,
-            }],
-            duration: true,
-        }
-    }
-
-    /// Artist(dj) | Radio(station) | Genre | Time — SomaFM. Time renders `—`
-    /// (streams have no length) but the column is kept for alignment.
-    pub fn somafm() -> Self {
-        Self {
-            cols: vec![
-                Col {
-                    field: ColField::Artist,
-                    label: "Artist",
-                    pct: Some(30),
-                },
-                Col {
-                    field: ColField::Title,
-                    label: "Radio",
-                    pct: Some(35),
-                },
-                Col {
-                    field: ColField::Album,
-                    label: "Genre",
-                    pct: Some(30),
-                },
-            ],
-            duration: true,
-        }
-    }
-
-    /// Radio — single full-width station-name column, no Time.
-    pub fn radio() -> Self {
-        Self {
-            cols: vec![Col {
-                field: ColField::Title,
-                label: "Radio",
-                pct: None,
-            }],
-            duration: false,
-        }
-    }
-
-    /// The ratatui constraints for `area`, shared by header + rows so both
-    /// split identically: one per variable column, then (if `duration`) the
-    /// 6-cell Time column and a 1-cell trailing spacer.
-    fn constraints(&self) -> Vec<Constraint> {
-        let mut c: Vec<Constraint> = self
-            .cols
-            .iter()
-            .map(|col| match col.pct {
-                Some(p) => Constraint::Percentage(p),
-                None => Constraint::Fill(1),
-            })
-            .collect();
-        if self.duration {
-            c.push(Constraint::Length(6));
-            c.push(Constraint::Length(1));
-        }
-        c
-    }
-}
-
 impl ThumbRowSpec {
     pub fn plain(
         label: impl Into<String>,
@@ -287,6 +145,9 @@ pub struct ThumbListCtx<'a> {
     /// Per-source column scheme: which columns exist, their labels, and their
     /// widths. Drives both the header bar and the row layout so they align.
     pub columns: ColumnLayout,
+    /// When true, rows that are ≥2 cells tall (icon mode) wrap each column's
+    /// text across the available rows instead of truncating to one line.
+    pub wrap_columns: bool,
 }
 
 pub fn render_thumb_list(
@@ -544,10 +405,16 @@ pub fn render_thumb_list(
         } else {
             text_rect
         };
+        // Wrap only when enabled AND the row is tall enough to hold a second
+        // line — i.e. icon mode. Single-cell rows always stay one line.
+        let wrap = ctx.wrap_columns && text_rect.height >= 2;
         match spec.track_cols.as_ref() {
-            Some(cols) => render_track_columns(f, text_rect, cols, &ctx.columns, row_style),
+            Some(cols) => render_track_columns(f, text_rect, cols, &ctx.columns, row_style, wrap),
             None => {
-                let para = Paragraph::new(spec.label.clone()).style(row_style);
+                let mut para = Paragraph::new(spec.label.clone()).style(row_style);
+                if wrap {
+                    para = para.wrap(Wrap { trim: true });
+                }
                 f.render_widget(para, text_rect);
             }
         }
@@ -665,15 +532,17 @@ fn draw_column_headers(
 /// Columns and widths come from `layout` (per-source scheme), so the same
 /// function renders every source: the variable columns split `area` by the
 /// layout's constraints, then the optional fixed-width right-aligned duration
-/// column. Each variable column reserves 1 cell of trailing padding and any
-/// overflow is replaced with `…`, so long fields end with a visible gap to
-/// the next column instead of merging into it.
+/// column. Each variable column reserves 1 cell of trailing padding. When
+/// `wrap` is set (icon mode, `area.height >= 2`), long fields word-wrap across
+/// the available rows; otherwise overflow is replaced with `…` so a long
+/// field ends with a visible gap to the next column instead of merging in.
 fn render_track_columns(
     f: &mut Frame<'_>,
     area: Rect,
     cols: &TrackColumns,
     layout: &ColumnLayout,
     style: ratatui::style::Style,
+    wrap: bool,
 ) {
     if area.width < 12 {
         // Too narrow for columns — fall back to `Artist — Title` (or just the
@@ -695,22 +564,37 @@ fn render_track_columns(
     let pad = |w: u16| -> u16 { w.saturating_sub(1).max(1) };
     for (i, col) in layout.cols.iter().enumerate() {
         let cell = split[i];
-        let text = match col.field {
-            ColField::Artist => truncate_col(&cols.artist, pad(cell.width)),
-            ColField::Title => truncate_col(&cols.title, pad(cell.width)),
+        // Full (untruncated) field value; wrapping renders it across rows,
+        // the single-line path truncates it below.
+        let raw = match col.field {
+            ColField::Artist => cols.artist.as_str(),
+            ColField::Title => cols.title.as_str(),
             // Hide the album cell when it duplicates the title (common when
             // source metadata is missing — MPD falls back to title-as-album,
             // rendering as visually identical adjacent columns). Case-
             // insensitive so "Rumours" / "rumours" still collapses.
             ColField::Album => {
                 if cols.album.eq_ignore_ascii_case(&cols.title) {
-                    String::new()
+                    ""
                 } else {
-                    truncate_col(&cols.album, pad(cell.width))
+                    cols.album.as_str()
                 }
             }
         };
-        f.render_widget(Paragraph::new(text).style(style), cell);
+        // Both paths keep the 1-cell trailing gap by rendering into a rect
+        // that's `pad` cells wide.
+        let col_rect = Rect {
+            width: pad(cell.width),
+            ..cell
+        };
+        let para = if wrap {
+            Paragraph::new(raw.to_string())
+                .style(style)
+                .wrap(Wrap { trim: true })
+        } else {
+            Paragraph::new(truncate_col(raw, col_rect.width)).style(style)
+        };
+        f.render_widget(para, col_rect);
     }
     if layout.duration {
         let dur = cols

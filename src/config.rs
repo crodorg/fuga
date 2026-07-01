@@ -92,6 +92,11 @@ pub struct UiConfig {
     /// queue). `false`: leave the top border bare. Non-track views (albums,
     /// artists, playlists, search) never show the bar regardless.
     pub column_headers: bool,
+    /// `true` (default): when inline thumbnails make a row 2 cells tall,
+    /// wrap each column's text across both rows so long titles stay
+    /// readable instead of truncating with `…`. Only affects icon mode —
+    /// single-cell rows (thumbs off / no art) always render one line.
+    pub wrap_columns: bool,
     /// How merged source lists render: "grouped" | "interleaved_dedupe" |
     /// "interleaved". Slice 1 always behaves as if "grouped".
     pub multi_source_layout: String,
@@ -134,6 +139,7 @@ impl Default for UiConfig {
             tabs: indexmap::IndexMap::new(),
             tab_alignment: "center".into(),
             column_headers: true,
+            wrap_columns: true,
             multi_source_layout: "grouped".into(),
             radio_split: true,
             art_collapsed: false,
