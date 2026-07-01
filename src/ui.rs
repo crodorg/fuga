@@ -8,11 +8,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs, Wrap};
 use ratatui_image::{Resize, StatefulImage};
 
-use crate::app::{App, LibraryView};
+use crate::app::{App, ArtLayout, LibraryView};
 use crate::config::TabAlignment;
 use crate::theme::Theme;
 use crate::types::{Category, PlayState};
-use crate::widgets::thumb_list::{ThumbListCtx, ThumbRowSpec, render_thumb_list};
+use crate::widgets::thumb_list::{ColumnLayout, ThumbListCtx, ThumbRowSpec, render_thumb_list};
 
 /// Build a `ThumbRowSpec` from a browse `Entry`. Track entries get the
 /// rmpc-style 4-column layout; everything else (album/artist/playlist
@@ -46,6 +46,37 @@ fn entry_to_row(
     }
 }
 
+/// Per-source column scheme for a browse category. Drives the header labels
+/// and the row layout. `rows` is consulted only for YouTube: when no row
+/// carries album metadata (the usual case) the Album column is dropped and
+/// Artist/Song widen; if some row does have an album, the standard 4-column
+/// layout is used so nothing is hidden.
+fn columns_for(cat: Category, rows: &[ThumbRowSpec]) -> ColumnLayout {
+    match cat {
+        Category::Podcasts => ColumnLayout::podcast(),
+        Category::YouTube => {
+            let any_album = rows.iter().any(|r| {
+                r.track_cols
+                    .as_ref()
+                    .is_some_and(|c| !c.album.trim().is_empty())
+            });
+            if any_album {
+                ColumnLayout::standard()
+            } else {
+                ColumnLayout::no_album()
+            }
+        }
+        Category::Radio => ColumnLayout::radio(),
+        // Standalone SomaFM tab and the merged Stations tab both use the
+        // SomaFM scheme (Artist/Radio/Genre/Time); radio rows in the merged
+        // tab simply fill the Radio column and leave the rest blank.
+        Category::SomaFm | Category::Stations => ColumnLayout::somafm(),
+        // Local, Spotify tracks, albums/artists/playlists (their descended
+        // track lists), and anything else fall back to the standard layout.
+        _ => ColumnLayout::standard(),
+    }
+}
+
 /// `(uri, scheme)` of the currently-playing queue item, if any. Used to
 /// flag the matching browse / queue row for now-playing highlight.
 fn playing_key(app: &App) -> Option<(String, &'static str)> {
@@ -60,61 +91,103 @@ pub fn render(app: &mut App, f: &mut Frame<'_>) {
     // Shuffle/repeat icons share the volume row at left.
     let bottom_h: u16 = 6;
 
-    // Standard 3-row stack: tabs / body / bottom bar.
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(1),
-            Constraint::Length(bottom_h),
-        ])
-        .split(area);
-    let tabs_area = layout[0];
-    let body_area = layout[1];
-    let bottom_full = layout[2];
-
-    // Compute art-panel size (or None when not playable / too tight).
-    let art_dims = compute_art_dims(app, area, bottom_h);
-
-    // Bottom bar shrinks horizontally so nothing renders beneath the album
-    // cover; the art panel will overlay the bottom-right corner of the
-    // terminal, protruding upward into the body area.
-    let bottom_area = match art_dims {
-        Some((art_w, _)) if bottom_full.width > art_w + 4 => Rect {
-            x: bottom_full.x,
-            y: bottom_full.y,
-            width: bottom_full.width.saturating_sub(art_w),
-            height: bottom_full.height,
-        },
-        _ => bottom_full,
+    // Sidebar mode: the now-playing block becomes a full-height right column
+    // (status over art) and the list is a clean full-height rectangle. Only
+    // when something is playing and the terminal is roomy enough; otherwise
+    // fall through to the standard overlay layout below.
+    let sidebar_w = if app.art_layout == ArtLayout::Sidebar {
+        compute_sidebar_dims(app, area, bottom_h)
+    } else {
+        None
     };
 
-    record_tab_rects(app, tabs_area);
-    render_tabs(app, f, tabs_area);
+    // `body_area` (for the toast) + `toast_art` (art inset, standard mode
+    // only — nothing overlaps the body in sidebar mode) fall out of whichever
+    // branch runs.
+    let (body_area, toast_art): (Rect, Option<(u16, u16)>) = if let Some(col_w) = sidebar_w {
+        // tabs (full width) / lower region
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(1)])
+            .split(area);
+        let tabs_area = rows[0];
+        let lower = rows[1];
+        record_tab_rects(app, tabs_area);
+        render_tabs(app, f, tabs_area);
 
-    // Where the art panel will land — passed to the body so the scrollbar
-    // shrinks to end just above the panel's top border.
-    let art_top_y: Option<u16> = art_dims.map(|(_, h)| area.bottom().saturating_sub(h));
+        // list | now-playing column
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(1), Constraint::Length(col_w)])
+            .split(lower);
+        let body_left = cols[0];
+        let col = cols[1];
 
-    app.body_rect = Some(body_area);
-    if app.lyrics_visible {
-        render_lyrics(app, f, body_area);
+        // status (top) over art (fills the rest)
+        let colrows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(bottom_h), Constraint::Min(1)])
+            .split(col);
+        let status_rect = colrows[0];
+        let art_rect = colrows[1];
+
+        // List never overlaps the art here, so no scrollbar clamp (art_top_y
+        // = None) — it runs the full height of the left rectangle.
+        render_body(app, f, body_left, None);
+        app.volume_rect = None;
+        render_bottom_bar(app, f, status_rect);
+        app.art_panel_rect = None;
+        render_sidebar_art(app, f, art_rect);
+        (body_left, None)
     } else {
-        match app.active_category() {
-            Category::Queue => render_queue(app, f, body_area, art_top_y),
-            Category::Search => render_search(app, f, body_area),
-            _ => render_browse(app, f, body_area, art_top_y),
+        // Standard 3-row stack: tabs / body / bottom bar.
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(bottom_h),
+            ])
+            .split(area);
+        let tabs_area = layout[0];
+        let body_area = layout[1];
+        let bottom_full = layout[2];
+
+        // Compute art-panel size (or None when not playable / too tight).
+        let art_dims = compute_art_dims(app, area, bottom_h);
+
+        // Bottom bar shrinks horizontally so nothing renders beneath the album
+        // cover; the art panel will overlay the bottom-right corner of the
+        // terminal, protruding upward into the body area.
+        let bottom_area = match art_dims {
+            Some((art_w, _)) if bottom_full.width > art_w + 4 => Rect {
+                x: bottom_full.x,
+                y: bottom_full.y,
+                width: bottom_full.width.saturating_sub(art_w),
+                height: bottom_full.height,
+            },
+            _ => bottom_full,
+        };
+
+        record_tab_rects(app, tabs_area);
+        render_tabs(app, f, tabs_area);
+
+        // Where the art panel will land — passed to the body so the scrollbar
+        // shrinks to end just above the panel's top border.
+        let art_top_y: Option<u16> = art_dims.map(|(_, h)| area.bottom().saturating_sub(h));
+
+        render_body(app, f, body_area, art_top_y);
+        app.volume_rect = None;
+        render_bottom_bar(app, f, bottom_area);
+        app.art_panel_rect = None;
+        if let Some((art_w, art_h)) = art_dims {
+            render_art_panel(app, f, area, art_w, art_h, bottom_h);
         }
-    }
-    app.volume_rect = None;
-    render_bottom_bar(app, f, bottom_area);
-    app.art_panel_rect = None;
-    if let Some((art_w, art_h)) = art_dims {
-        render_art_panel(app, f, area, art_w, art_h, bottom_h);
-    }
+        (body_area, art_dims)
+    };
 
     if app.status.is_some() {
-        render_status_toast(app, f, area);
+        render_status_toast(app, f, body_area, toast_art);
     }
     if app.help_visible {
         render_help(app, f, area);
@@ -138,6 +211,94 @@ pub fn render(app: &mut App, f: &mut Frame<'_>) {
     // covers tab bar, body, bottom bar.
     if app.expanded_art_uri.is_some() {
         render_expanded_art(app, f, area);
+    }
+}
+
+/// Render the list body (lyrics / queue / search / browse) into `body_area`.
+/// `art_top_y` clamps the scrollbar to stop above an overlapping art panel
+/// (standard mode); pass `None` when nothing overlaps the body (sidebar mode).
+/// Shared by both layout branches in `render`.
+fn render_body(app: &mut App, f: &mut Frame<'_>, body_area: Rect, art_top_y: Option<u16>) {
+    app.body_rect = Some(body_area);
+    if app.lyrics_visible {
+        render_lyrics(app, f, body_area);
+    } else {
+        match app.active_category() {
+            Category::Queue => render_queue(app, f, body_area, art_top_y),
+            Category::Search => render_search(app, f, body_area),
+            _ => render_browse(app, f, body_area, art_top_y),
+        }
+    }
+}
+
+/// Column width for the sidebar art layout, or `None` when it shouldn't run
+/// (nothing playing, thumbs off, or the terminal too small to keep a usable
+/// list beside a legible column). `art_width_pct` sets the column width as a
+/// share of the full terminal width; the list keeps at least 30 columns.
+fn compute_sidebar_dims(app: &App, area: Rect, bottom_h: u16) -> Option<u16> {
+    use crate::term_probe::ThumbMode;
+    app.now_playing_protocol.as_ref()?;
+    if matches!(app.term.mode, ThumbMode::Off) {
+        return None;
+    }
+    // Need room for tabs (3) + status (bottom_h) + a few rows of art, and a
+    // wide enough terminal to split without crushing the list.
+    if area.width < 60 || area.height < bottom_h + 12 {
+        return None;
+    }
+    let w_pct = app.art_width_pct.clamp(15, 100) as u32;
+    let col_w = ((w_pct * area.width as u32) / 100) as u16;
+    // Keep the list usable (≥30 cols) and the column legible (≥20 cols).
+    let max_col = area.width.saturating_sub(30);
+    if max_col < 20 {
+        return None;
+    }
+    Some(col_w.clamp(20, max_col))
+}
+
+/// Render the now-playing cover into the sidebar column's lower rect: a
+/// bordered panel with the image centered and aspect-fit inside. Sets
+/// `art_panel_rect` so a click still cycles the layout. Tinted by the
+/// playing source to match the status block above it.
+fn render_sidebar_art(app: &mut App, f: &mut Frame<'_>, rect: Rect) {
+    if rect.height < 3 || rect.width < 6 {
+        app.art_panel_rect = None;
+        return;
+    }
+    let playing_border = app.playing_theme().block_border();
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(playing_border);
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    app.art_panel_rect = Some(rect);
+
+    // Largest aspect-correct sub-rect of `inner` (cells are taller than wide,
+    // so account for both pixel axes), centered — then Scale fills it crisply
+    // without distortion. Mirrors compute_art_dims' back-derive.
+    let (cw, ch) = app.term.picker.font_size();
+    let (cell_w, cell_h) = (cw as f64, ch as f64);
+    let (iw, ih) = app.now_playing_aspect.unwrap_or((1, 1));
+    let img_aspect = if ih > 0 { iw as f64 / ih as f64 } else { 1.0 };
+    let inner_w_px = inner.width as f64 * cell_w;
+    let inner_h_px = inner.height as f64 * cell_h;
+    let (art_w_px, art_h_px) = if inner_w_px / inner_h_px > img_aspect {
+        (inner_h_px * img_aspect, inner_h_px)
+    } else {
+        (inner_w_px, inner_w_px / img_aspect)
+    };
+    let art_w = ((art_w_px / cell_w).round() as u16).clamp(1, inner.width);
+    let art_h = ((art_h_px / cell_h).round() as u16).clamp(1, inner.height);
+    let img_rect = Rect {
+        x: inner.x + (inner.width - art_w) / 2,
+        y: inner.y + (inner.height - art_h) / 2,
+        width: art_w,
+        height: art_h,
+    };
+    if let Some(proto) = app.now_playing_protocol.as_mut() {
+        let img = StatefulImage::default().resize(Resize::Scale(Some(FilterType::Lanczos3)));
+        f.render_stateful_widget(img, img_rect, proto);
     }
 }
 
@@ -396,29 +557,35 @@ fn record_tab_rects(app: &mut App, area: Rect) {
     }
 }
 
-fn render_status_toast(app: &App, f: &mut Frame<'_>, area: Rect) {
-    if area.height < 4 || area.width < 8 {
+fn render_status_toast(app: &App, f: &mut Frame<'_>, body: Rect, art: Option<(u16, u16)>) {
+    if body.height < 3 || body.width < 8 {
         return;
     }
     let Some(s) = app.status.as_deref().filter(|s| !s.is_empty()) else {
         return;
     };
     let label = format!(" {s} ");
-    // Toast sits on the body block's TOP border row (y = tabs_h = 3), pinned
-    // to the right edge so it never overlaps the panel title's `(N)` count
-    // on the left. Reserve a 2-cell margin from the right border.
-    let label_w = (label.chars().count() as u16).min(area.width.saturating_sub(4));
+    // The notification now lives on the body box's BOTTOM border row, pinned
+    // to the right edge and styled as plain letters (no reversed block) so it
+    // mirrors the title on the opposite corner. When the now-playing cover is
+    // up it overlays the bottom-right corner, so inset the toast to the left
+    // of the art width — same shrink the bottom bar uses — to keep it clear
+    // of the image.
+    let art_w = art.map(|(w, _)| w).unwrap_or(0);
+    let right = body.right().saturating_sub(art_w);
+    let avail = right.saturating_sub(body.x);
+    let label_w = (label.chars().count() as u16).min(avail.saturating_sub(2));
+    if label_w == 0 {
+        return;
+    }
     let row = Rect {
-        x: area.x + area.width.saturating_sub(label_w + 2),
-        y: area.y + 3,
+        x: right.saturating_sub(label_w + 2),
+        y: body.bottom().saturating_sub(1),
         width: label_w,
         height: 1,
     };
     f.render_widget(Clear, row);
-    let line = Line::from(vec![Span::styled(
-        label,
-        app.theme.accent().add_modifier(Modifier::REVERSED),
-    )]);
+    let line = Line::from(vec![Span::styled(label, app.theme.fg())]);
     f.render_widget(Paragraph::new(line).style(app.theme.fg()), row);
 }
 
@@ -653,6 +820,8 @@ fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option
         thumb_hits: &mut thumb_hits,
         count_override: None,
         right_title,
+        show_column_headers: app.column_headers,
+        columns: columns_for(cat, &rows),
     };
     render_thumb_list(
         f,
@@ -739,6 +908,9 @@ fn render_queue(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option<
         thumb_hits: &mut thumb_hits,
         count_override: None,
         right_title: None,
+        show_column_headers: app.column_headers,
+        // Queue is cross-source; keep the standard Artist/Song/Album/Time.
+        columns: ColumnLayout::standard(),
     };
     render_thumb_list(
         f,
@@ -852,6 +1024,10 @@ fn render_search(app: &mut App, f: &mut Frame<'_>, area: Rect) {
         thumb_hits: &mut thumb_hits,
         count_override: Some(data_count),
         right_title: None,
+        show_column_headers: app.column_headers,
+        // Search rows are plain-label (no track_cols), so the header never
+        // draws; the layout is unused but must be provided.
+        columns: ColumnLayout::standard(),
     };
     render_thumb_list(
         f,
@@ -1217,7 +1393,7 @@ fn compute_art_dims(app: &App, area: Rect, bottom_h: u16) -> Option<(u16, u16)> 
     // shrunk to bottom-bar height so it no longer protrudes into the list
     // body. Width derived from bottom_h × image aspect so the cover stays
     // proportional.
-    if app.art_collapsed {
+    if app.art_layout == ArtLayout::Collapsed {
         let (cw, ch) = app.term.picker.font_size();
         let cell_w_px = cw as f64;
         let cell_h_px = ch as f64;
@@ -1360,7 +1536,7 @@ fn render_art_panel(
     // was the LEFT + TOP border drawing over the bottom-bar's own border.
     // Render the image into the full art_rect, then return — skip all
     // stitching too.
-    if app.art_collapsed {
+    if app.art_layout == ArtLayout::Collapsed {
         if let Some(proto) = app.now_playing_protocol.as_mut() {
             let img = StatefulImage::default().resize(Resize::Scale(Some(FilterType::Lanczos3)));
             f.render_stateful_widget(img, art_rect, proto);

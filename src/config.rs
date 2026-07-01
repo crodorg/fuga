@@ -87,11 +87,17 @@ pub struct UiConfig {
     pub tabs: indexmap::IndexMap<String, Vec<String>>,
     /// Tab bar horizontal alignment: "center" | "left" | "right".
     pub tab_alignment: String,
+    /// `true` (default): draw an `Artist / Song / Album / Time` header bar on
+    /// the body box's top border for track-columned views (track lists, the
+    /// queue). `false`: leave the top border bare. Non-track views (albums,
+    /// artists, playlists, search) never show the bar regardless.
+    pub column_headers: bool,
     /// How merged source lists render: "grouped" | "interleaved_dedupe" |
     /// "interleaved". Slice 1 always behaves as if "grouped".
     pub multi_source_layout: String,
-    /// `false` (default): one merged Stations tab combining radio + somafm.
-    /// `true`: two separate tabs.
+    /// `true` (default): separate Radio and SomaFM tabs, each with its own
+    /// column layout. `false`: one merged Stations tab combining radio +
+    /// somafm (uses the SomaFM column scheme).
     pub radio_split: bool,
     /// Default state of the now-playing art panel. `false` (default) =
     /// big art; `true` = collapsed to bottom-bar height. Overridden by
@@ -127,8 +133,9 @@ impl Default for UiConfig {
             library_columns: vec!["artist".into(), "album".into(), "title".into()],
             tabs: indexmap::IndexMap::new(),
             tab_alignment: "center".into(),
+            column_headers: true,
             multi_source_layout: "grouped".into(),
-            radio_split: false,
+            radio_split: true,
             art_collapsed: false,
             // Defaults that roughly preserve the prior look on a typical
             // 130x50 terminal: ~33 rows tall, ~42 cells wide.

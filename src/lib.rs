@@ -301,6 +301,7 @@ pub async fn run_app(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> 
         });
 
     let thumb_cells = config.ui.thumb_cells;
+    let column_headers = config.ui.column_headers;
     let art_height_pct = config.ui.art_height_pct;
     let art_width_pct = config.ui.art_width_pct;
     let keymap = crate::keys::Keymap::from_config(&config.keybindings);
@@ -348,6 +349,7 @@ pub async fn run_app(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> 
         art,
         term,
         thumb_cells,
+        column_headers,
         art_height_pct,
         art_width_pct,
         keymap,
@@ -362,9 +364,9 @@ pub async fn run_app(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> 
         thumb_cycle,
     );
 
-    // Restore art-collapsed state from disk. Falls back to the config
-    // default when the state file is missing or unparseable, so the first
-    // run honors `[ui] art_collapsed`.
+    // Restore art layout + pins from disk. Falls back to the config default
+    // when the state file is missing or unparseable, so the first run honors
+    // `[ui] art_collapsed`.
     let data_dir = config.data_dir();
     let state_path = app_state::state_path(&data_dir);
     let persisted = if state_path.exists() {
@@ -372,10 +374,17 @@ pub async fn run_app(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> 
     } else {
         app_state::AppState {
             art_collapsed: config.ui.art_collapsed,
+            art_layout: None,
             pinned: Vec::new(),
         }
     };
-    app.art_collapsed = persisted.art_collapsed;
+    // Prefer the explicit `art_layout` token; fall back to the legacy
+    // `art_collapsed` bool for state files written before the sidebar mode.
+    app.art_layout = match persisted.art_layout.as_deref() {
+        Some(tok) => crate::app::ArtLayout::from_token(tok),
+        None if persisted.art_collapsed => crate::app::ArtLayout::Collapsed,
+        None => crate::app::ArtLayout::Expanded,
+    };
     app.pinned = persisted.pinned.into_iter().collect();
     app.state_path = Some(state_path);
 

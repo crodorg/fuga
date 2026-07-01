@@ -8,8 +8,16 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AppState {
+    /// Legacy flag from when the art panel had only big/collapsed. Still
+    /// written (mirrors `art_layout == "collapsed"`) so an older binary
+    /// keeps restoring the collapse; superseded by `art_layout` on load.
     #[serde(default)]
     pub art_collapsed: bool,
+    /// Now-playing art layout: "expanded" | "collapsed" | "sidebar". When
+    /// absent (state written by a pre-sidebar build), load falls back to
+    /// `art_collapsed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub art_layout: Option<String>,
     /// URIs the user has pinned. Sort routines surface these to the top
     /// of every browse view regardless of the active axis.
     #[serde(default)]

@@ -171,6 +171,50 @@ pub struct RowBatch {
     pub is_extend: bool,
 }
 
+/// How the now-playing art panel is laid out. Cycled by `e` (and the art
+/// mouse click) in the order below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtLayout {
+    /// Big cover anchored bottom-right, protruding up into the body; the
+    /// full-width bottom bar sits to its left. The default.
+    Expanded,
+    /// Cover shrunk to bottom-bar height at bottom-right — no overlay into
+    /// the list. Bottom bar still full-width to its left.
+    Collapsed,
+    /// Now-playing becomes a full-height right column: status block on top,
+    /// cover below it. The list is a clean full-height rectangle on the left.
+    Sidebar,
+}
+
+impl ArtLayout {
+    /// Next mode in the `e`-cycle: Expanded → Collapsed → Sidebar → Expanded.
+    pub fn next(self) -> Self {
+        match self {
+            ArtLayout::Expanded => ArtLayout::Collapsed,
+            ArtLayout::Collapsed => ArtLayout::Sidebar,
+            ArtLayout::Sidebar => ArtLayout::Expanded,
+        }
+    }
+
+    /// Serialized token for the state file.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ArtLayout::Expanded => "expanded",
+            ArtLayout::Collapsed => "collapsed",
+            ArtLayout::Sidebar => "sidebar",
+        }
+    }
+
+    /// Parse a state-file token; unknown values fall back to Expanded.
+    pub fn from_token(s: &str) -> Self {
+        match s {
+            "collapsed" => ArtLayout::Collapsed,
+            "sidebar" => ArtLayout::Sidebar,
+            _ => ArtLayout::Expanded,
+        }
+    }
+}
+
 pub struct App {
     /// Configured visible tab list. Index `active_tab_idx` selects the active.
     pub tabs: Vec<Category>,
@@ -209,6 +253,9 @@ pub struct App {
     /// matching view via `handle_row_batch`.
     pub row_batch_tx: UnboundedSender<RowBatch>,
     pub thumb_cells: u16,
+    /// `[ui] column_headers`. When true, track-columned lists draw an
+    /// `Artist / Song / Album / Time` header bar on the box's top border.
+    pub column_headers: bool,
     /// Vertical-axis size knob for the now-playing art panel, from
     /// `[ui] art_height_pct`. 100 = full available height. Clamped to
     /// [20, 100] at use.
@@ -353,12 +400,11 @@ pub struct App {
     /// area are swallowed so they don't pass through to the body rows
     /// underneath.
     pub art_panel_rect: Option<Rect>,
-    /// User clicked the art to hide its body protrusion. The art panel still
-    /// renders, just shrunk to bottom-bar height (no overlay into the list).
-    /// Click again to expand. Reset on track change.
-    pub art_collapsed: bool,
+    /// Now-playing art layout mode, cycled by `e` and the art mouse click.
+    /// Persists across runs via state.json.
+    pub art_layout: ArtLayout,
     /// Path to the cross-run state file (`state.json`). When set, mouse
-    /// clicks that flip `art_collapsed` also persist the new value here.
+    /// clicks that change `art_layout` also persist the new value here.
     pub state_path: Option<std::path::PathBuf>,
     /// When `Some(uri)`, the renderer overlays that cover full-screen
     /// (centered, 60% of terminal area, single-line border). Click anywhere
@@ -485,6 +531,7 @@ impl App {
         art_cache: Arc<ArtCache>,
         term: Term,
         thumb_cells: u16,
+        column_headers: bool,
         art_height_pct: u16,
         art_width_pct: u16,
         keymap: Keymap,
@@ -527,6 +574,7 @@ impl App {
             wake_tx,
             row_batch_tx,
             thumb_cells,
+            column_headers,
             art_height_pct,
             art_width_pct,
             thumb_cycle,
@@ -581,7 +629,7 @@ impl App {
             body_top_at_render: 0,
             progress_bar_rect: None,
             art_panel_rect: None,
-            art_collapsed: false,
+            art_layout: ArtLayout::Expanded,
             state_path: None,
             expanded_art_uri: None,
             expanded_art_protocol: None,
@@ -1268,7 +1316,7 @@ impl App {
             Action::ClearQueue => self.clear_queue().await,
             Action::RemoveFromQueue => self.remove_from_queue().await,
             Action::ExpandHoveredArt => self.expand_hovered_art().await,
-            Action::ToggleArtSize => self.toggle_art_collapsed(),
+            Action::ToggleArtSize => self.cycle_art_layout(),
             Action::OpenActionMenu => self.open_action_menu(),
             Action::TogglePinHovered => self.toggle_pin_hovered(),
             Action::FilterInPage => self.begin_filter_input(),
@@ -2660,7 +2708,7 @@ impl App {
         }
     }
 
-    /// Write current cross-run state (art_collapsed) to disk. Silent on
+    /// Write current cross-run state (art_layout, pins) to disk. Silent on
     /// IO error — losing the state is harmless, next launch falls back to
     /// the config default.
     fn persist_state(&self) {
@@ -2668,7 +2716,9 @@ impl App {
             let mut pinned: Vec<String> = self.pinned.iter().cloned().collect();
             pinned.sort();
             crate::app_state::AppState {
-                art_collapsed: self.art_collapsed,
+                // Legacy mirror so an older build still restores collapse.
+                art_collapsed: self.art_layout == ArtLayout::Collapsed,
+                art_layout: Some(self.art_layout.as_str().to_string()),
                 pinned,
             }
             .save(p);
@@ -3218,14 +3268,14 @@ impl App {
         self.dirty = true;
     }
 
-    /// Toggle the now-playing art panel between full size and collapsed
-    /// (bottom-bar height). Rebuilds the image protocol from the stored
-    /// source so a fresh graphics id is transmitted at the new size —
-    /// reusing the old protocol leaves the larger Kitty placement blank
-    /// after a small→large toggle (only a fresh id repaints). Bound to the
-    /// `e` key and the art-panel mouse click.
-    fn toggle_art_collapsed(&mut self) {
-        self.art_collapsed = !self.art_collapsed;
+    /// Cycle the now-playing art layout: Expanded → Collapsed → Sidebar →
+    /// Expanded. Rebuilds the image protocol from the stored source so a
+    /// fresh graphics id is transmitted at the new size — reusing the old
+    /// protocol leaves the larger Kitty placement blank after a small→large
+    /// change (only a fresh id repaints). Bound to the `e` key and the
+    /// art-panel mouse click.
+    fn cycle_art_layout(&mut self) {
+        self.art_layout = self.art_layout.next();
         if let Some(img) = self.now_playing_art.as_ref() {
             let proto = self.term.picker.new_resize_protocol((**img).clone());
             self.now_playing_protocol = Some(proto);
@@ -3745,7 +3795,7 @@ impl App {
             &cur.display.title,
             cur.display.artist.as_deref(),
         ));
-        // Don't auto-reset art_collapsed on track change — preference now
+        // Don't auto-reset art_layout on track change — preference now
         // persists across runs, and users on small terminals want it to
         // stay collapsed.
         self.now_playing_uri = Some(cur.uri.clone());
@@ -3994,14 +4044,14 @@ impl App {
                 // open the art for the hovered row instead. Click still
                 // moves the cursor to that row via the body-hit path
                 // below.
-                // Art panel: left-click toggles collapsed mode (art shrinks
-                // to bottom-bar height instead of protruding into the body).
-                // Click still swallowed so it never falls through to a body
-                // row underneath. New state persisted to state.json so it
+                // Art panel: left-click cycles the art layout (Expanded →
+                // Collapsed → Sidebar), same as the `e` key. Click still
+                // swallowed so it never falls through to a body row
+                // underneath. New state persisted to state.json so it
                 // survives restarts.
                 if let Some(art) = self.art_panel_rect {
                     if rect_contains(&art, x, y) {
-                        self.toggle_art_collapsed();
+                        self.cycle_art_layout();
                         return Action::None;
                     }
                 }

@@ -26,14 +26,25 @@ fps_cap = 30                     # render-rate ceiling
 # Clamped to [20, 100] / [15, 100]. Sane on terminals from 80x24 upward.
 art_height_pct = 70
 art_width_pct  = 40
-# Start fuga with the art panel collapsed (sits inside the bottom-bar
-# height) instead of expanded. Once you toggle the panel manually (left-
-# click), the persisted state in state.json wins over this default.
+# The `e` key (and clicking the cover) cycles three art layouts:
+#   expanded  → big cover bottom-right, protruding into the list
+#   collapsed → cover shrunk to the bottom-bar height, no overlay
+#   sidebar   → now-playing becomes a full-height right column (status over
+#               cover) and the list is a clean full-height rectangle;
+#               art_width_pct sets the column width, art_height_pct is unused
+# The choice persists across runs in state.json. `art_collapsed = true` below
+# only sets the FIRST-run default (until you cycle once).
 # art_collapsed = false
 
 tab_alignment       = "center"    # center | left | right
 multi_source_layout = "grouped"   # grouped | interleaved_dedupe | interleaved
-radio_split         = false       # true → separate Radio + SomaFM tabs
+radio_split         = true        # true (default) → separate Radio + SomaFM tabs; false → merged Stations tab
+# Header bar on the body box's top border, labelling the track columns.
+# Labels adapt per source: Artist/Song/Album/Time for music, Podcast/Time
+# for podcasts, Artist/Song/Time for YouTube, Artist/Radio/Genre/Time for
+# SomaFM, a single Radio column for internet radio. Views with no track
+# columns (albums, artists, playlists, search) skip it.
+column_headers      = true        # false → bare top border
 
 # Per-source tab list. `t` cycles the active source and the tab bar
 # swaps to that source's list. Map keys are source schemes; values are

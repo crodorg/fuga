@@ -86,6 +86,150 @@ pub struct TrackColumns {
     pub duration: Option<Duration>,
 }
 
+/// Which `TrackColumns` field a variable-width column pulls from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ColField {
+    Artist,
+    Title,
+    Album,
+}
+
+/// A variable-width column: which field it shows, its header label, and how
+/// it claims horizontal space. The right-aligned fixed duration column is
+/// not modelled here — it's appended by `ColumnLayout::duration`.
+#[derive(Clone)]
+pub struct Col {
+    pub field: ColField,
+    pub label: &'static str,
+    /// `Some(pct)` → `Constraint::Percentage`; `None` → `Constraint::Fill(1)`
+    /// (claim all remaining width). Fill lets one column stretch edge-to-edge
+    /// (podcast title, radio station name).
+    pub pct: Option<u16>,
+}
+
+/// Per-source column scheme shared by the header bar and the row renderer so
+/// the two always align. `cols` are the variable-width columns in display
+/// order; `duration` appends the fixed 6-cell right-aligned `Time` column.
+#[derive(Clone)]
+pub struct ColumnLayout {
+    pub cols: Vec<Col>,
+    pub duration: bool,
+}
+
+impl ColumnLayout {
+    /// Artist | Song | Album | Time — local, Spotify tracks, the queue.
+    pub fn standard() -> Self {
+        Self {
+            cols: vec![
+                Col {
+                    field: ColField::Artist,
+                    label: "Artist",
+                    pct: Some(30),
+                },
+                Col {
+                    field: ColField::Title,
+                    label: "Song",
+                    pct: Some(35),
+                },
+                Col {
+                    field: ColField::Album,
+                    label: "Album",
+                    pct: Some(30),
+                },
+            ],
+            duration: true,
+        }
+    }
+
+    /// Artist | Song | Time — YouTube when no album metadata is present; the
+    /// two text columns widen to reclaim the dropped Album column.
+    pub fn no_album() -> Self {
+        Self {
+            cols: vec![
+                Col {
+                    field: ColField::Artist,
+                    label: "Artist",
+                    pct: Some(40),
+                },
+                Col {
+                    field: ColField::Title,
+                    label: "Song",
+                    pct: None,
+                },
+            ],
+            duration: true,
+        }
+    }
+
+    /// Podcast | Time — episode name fills icon→Time.
+    pub fn podcast() -> Self {
+        Self {
+            cols: vec![Col {
+                field: ColField::Title,
+                label: "Podcast",
+                pct: None,
+            }],
+            duration: true,
+        }
+    }
+
+    /// Artist(dj) | Radio(station) | Genre | Time — SomaFM. Time renders `—`
+    /// (streams have no length) but the column is kept for alignment.
+    pub fn somafm() -> Self {
+        Self {
+            cols: vec![
+                Col {
+                    field: ColField::Artist,
+                    label: "Artist",
+                    pct: Some(30),
+                },
+                Col {
+                    field: ColField::Title,
+                    label: "Radio",
+                    pct: Some(35),
+                },
+                Col {
+                    field: ColField::Album,
+                    label: "Genre",
+                    pct: Some(30),
+                },
+            ],
+            duration: true,
+        }
+    }
+
+    /// Radio — single full-width station-name column, no Time.
+    pub fn radio() -> Self {
+        Self {
+            cols: vec![Col {
+                field: ColField::Title,
+                label: "Radio",
+                pct: None,
+            }],
+            duration: false,
+        }
+    }
+
+    /// The ratatui constraints for `area`, shared by header + rows so both
+    /// split identically: one per variable column, then (if `duration`) the
+    /// 6-cell Time column and a 1-cell trailing spacer.
+    fn constraints(&self) -> Vec<Constraint> {
+        let mut c: Vec<Constraint> = self
+            .cols
+            .iter()
+            .map(|col| match col.pct {
+                Some(p) => Constraint::Percentage(p),
+                None => Constraint::Fill(1),
+            })
+            .collect();
+        if self.duration {
+            c.push(Constraint::Length(6));
+            c.push(Constraint::Length(1));
+        }
+        c
+    }
+}
+
 impl ThumbRowSpec {
     pub fn plain(
         label: impl Into<String>,
@@ -132,10 +276,17 @@ pub struct ThumbListCtx<'a> {
     /// non-data rows (e.g. search-result group headers) and the count
     /// should reflect only the data rows.
     pub count_override: Option<usize>,
-    /// Optional right-aligned title appearing on the same top border as
+    /// Optional right-aligned title appearing on the same bottom border as
     /// the main title. Used to surface the streaming dots indicator on
     /// the right edge while the view is loading.
     pub right_title: Option<String>,
+    /// When true and the list is track-columned, draw the column-header bar
+    /// (labels from `columns`) on the box's TOP border, aligned to the track
+    /// columns. Non-track lists ignore it.
+    pub show_column_headers: bool,
+    /// Per-source column scheme: which columns exist, their labels, and their
+    /// widths. Drives both the header bar and the row layout so they align.
+    pub columns: ColumnLayout,
 }
 
 pub fn render_thumb_list(
@@ -149,12 +300,14 @@ pub fn render_thumb_list(
     wake: &UnboundedSender<()>,
 ) {
     let title_count = ctx.count_override.unwrap_or(ctx.rows.len());
+    // Title + streaming indicator live on the BOTTOM border now; the top
+    // border is reserved for the optional column-header bar (drawn below).
     let mut block = Block::default()
-        .title(format!("{} ({})", ctx.title, title_count))
+        .title_bottom(format!("{} ({})", ctx.title, title_count))
         .borders(Borders::ALL)
         .border_style(ctx.theme.block_border());
     if let Some(right) = ctx.right_title.as_deref() {
-        block = block.title(
+        block = block.title_bottom(
             Line::from(right.to_string())
                 .style(ctx.theme.accent())
                 .right_aligned(),
@@ -235,6 +388,28 @@ pub fn render_thumb_list(
     } else {
         inner
     };
+
+    // Column-header bar: label the track columns on the box's TOP border,
+    // aligned to the same layout the rows use. Only for track-columned lists
+    // (track lists, the queue) — album/artist/playlist/search lists have no
+    // columns to label and skip it. Draws over the border cells it lands on,
+    // leaving `─` between labels so it reads as a header cutting the line.
+    if ctx.show_column_headers
+        && ctx
+            .rows
+            .iter()
+            .any(|r| !r.is_header && r.track_cols.is_some())
+    {
+        draw_column_headers(
+            f,
+            ctx.area,
+            inner,
+            ctx.thumb_cells,
+            reserve_thumb_column,
+            &ctx.columns,
+            ctx.theme,
+        );
+    }
 
     // Auto-scroll: keep cursor visible. Walk from `top` to bound visible
     // window; if cursor outside, pull `top` toward cursor.
@@ -370,7 +545,7 @@ pub fn render_thumb_list(
             text_rect
         };
         match spec.track_cols.as_ref() {
-            Some(cols) => render_track_columns(f, text_rect, cols, row_style),
+            Some(cols) => render_track_columns(f, text_rect, cols, &ctx.columns, row_style),
             None => {
                 let para = Paragraph::new(spec.label.clone()).style(row_style);
                 f.render_widget(para, text_rect);
@@ -429,20 +604,80 @@ fn truncate_col(s: &str, width: u16) -> String {
     out
 }
 
+/// Draw the column-header labels on the box's top border row, aligned to the
+/// same columns `render_track_columns` uses (both build splits from the same
+/// `ColumnLayout`) so each label sits above its column. `border_row.y` is the
+/// top border row; `inner` is the scrollbar-adjusted content rect that fixes
+/// the horizontal span. Skips when the text area is too narrow for columns
+/// (matching the row renderer's narrow fallback).
+fn draw_column_headers(
+    f: &mut Frame<'_>,
+    border_row: Rect,
+    inner: Rect,
+    thumb_cells: u16,
+    reserve_thumb_column: bool,
+    layout: &ColumnLayout,
+    theme: &Theme,
+) {
+    // Text area begins after the thumb column, mirroring the per-row split.
+    let text_x = if reserve_thumb_column {
+        let img_w = (thumb_cells * 2).min(inner.width.saturating_sub(2));
+        inner.x + img_w + 1
+    } else {
+        inner.x
+    };
+    let text_w = inner.right().saturating_sub(text_x);
+    if text_w < 12 {
+        return;
+    }
+    let area = Rect {
+        x: text_x,
+        y: border_row.y,
+        width: text_w,
+        height: 1,
+    };
+    let split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(layout.constraints())
+        .split(area);
+    let style = theme.dim();
+    // Write only the label cells straight into the buffer. A Paragraph would
+    // `set_style` its whole column rect, recoloring the border `─` between
+    // labels to the (grey) header fg; set_stringn touches just the glyphs it
+    // writes, so the dashes between columns keep the theme border color.
+    let buf = f.buffer_mut();
+    for (i, col) in layout.cols.iter().enumerate() {
+        let cell = split[i];
+        buf.set_stringn(cell.x, cell.y, col.label, cell.width as usize, style);
+    }
+    if layout.duration {
+        // Right-aligned to sit above the right-aligned duration column, which
+        // is the fixed 6-cell column appended after the variable columns.
+        let dur_cell = split[layout.cols.len()];
+        let time = "Time";
+        let tw = time.chars().count() as u16;
+        let tx = dur_cell.right().saturating_sub(tw).max(dur_cell.x);
+        buf.set_stringn(tx, dur_cell.y, time, tw as usize, style);
+    }
+}
+
 /// Lay out a single track row as 4 columns: Artist | Title | Album | Len.
-/// Last column is fixed-width and right-aligned. Other three split the
-/// remaining width as 30 / 35 / 30 percent. Each variable column reserves
-/// 1 cell of trailing padding and any overflow is replaced with `…`, so
-/// long fields end with a visible gap to the next column instead of
-/// merging into it.
+/// Columns and widths come from `layout` (per-source scheme), so the same
+/// function renders every source: the variable columns split `area` by the
+/// layout's constraints, then the optional fixed-width right-aligned duration
+/// column. Each variable column reserves 1 cell of trailing padding and any
+/// overflow is replaced with `…`, so long fields end with a visible gap to
+/// the next column instead of merging into it.
 fn render_track_columns(
     f: &mut Frame<'_>,
     area: Rect,
     cols: &TrackColumns,
+    layout: &ColumnLayout,
     style: ratatui::style::Style,
 ) {
     if area.width < 12 {
-        // Too narrow for columns — fall back to `Artist — Title`.
+        // Too narrow for columns — fall back to `Artist — Title` (or just the
+        // title when there's no artist, e.g. radio / podcast rows).
         let label = if cols.artist.is_empty() {
             cols.title.clone()
         } else {
@@ -454,43 +689,44 @@ fn render_track_columns(
     }
     let split = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(30),
-            Constraint::Percentage(35),
-            Constraint::Percentage(30),
-            Constraint::Length(6),
-            // 1-cell trailing spacer so the duration doesn't run flush
-            // against the panel border / scrollbar.
-            Constraint::Length(1),
-        ])
+        .constraints(layout.constraints())
         .split(area);
-    let dur = cols
-        .duration
-        .map(|d| {
-            let secs = d.as_secs();
-            format!("{}:{:02}", secs / 60, secs % 60)
-        })
-        .unwrap_or_else(|| "—".into());
     // Reserve 1 trailing cell so adjacent columns keep visible whitespace.
     let pad = |w: u16| -> u16 { w.saturating_sub(1).max(1) };
-    let artist = truncate_col(&cols.artist, pad(split[0].width));
-    let title = truncate_col(&cols.title, pad(split[1].width));
-    // Hide the album cell when it duplicates the title (common when source
-    // metadata is missing — MPD falls back to title-as-album, which renders
-    // as visually identical adjacent columns). Case-insensitive compare so
-    // "Rumours" / "rumours" still collapses.
-    let album = if cols.album.eq_ignore_ascii_case(&cols.title) {
-        String::new()
-    } else {
-        truncate_col(&cols.album, pad(split[2].width))
-    };
-    f.render_widget(Paragraph::new(artist).style(style), split[0]);
-    f.render_widget(Paragraph::new(title).style(style), split[1]);
-    f.render_widget(Paragraph::new(album).style(style), split[2]);
-    f.render_widget(
-        Paragraph::new(dur).style(style).alignment(Alignment::Right),
-        split[3],
-    );
+    for (i, col) in layout.cols.iter().enumerate() {
+        let cell = split[i];
+        let text = match col.field {
+            ColField::Artist => truncate_col(&cols.artist, pad(cell.width)),
+            ColField::Title => truncate_col(&cols.title, pad(cell.width)),
+            // Hide the album cell when it duplicates the title (common when
+            // source metadata is missing — MPD falls back to title-as-album,
+            // rendering as visually identical adjacent columns). Case-
+            // insensitive so "Rumours" / "rumours" still collapses.
+            ColField::Album => {
+                if cols.album.eq_ignore_ascii_case(&cols.title) {
+                    String::new()
+                } else {
+                    truncate_col(&cols.album, pad(cell.width))
+                }
+            }
+        };
+        f.render_widget(Paragraph::new(text).style(style), cell);
+    }
+    if layout.duration {
+        let dur = cols
+            .duration
+            .map(|d| {
+                let secs = d.as_secs();
+                format!("{}:{:02}", secs / 60, secs % 60)
+            })
+            .unwrap_or_else(|| "—".into());
+        // Fixed 6-cell column appended after the variable columns.
+        let dur_cell = split[layout.cols.len()];
+        f.render_widget(
+            Paragraph::new(dur).style(style).alignment(Alignment::Right),
+            dur_cell,
+        );
+    }
 }
 
 fn ensure_protocol(
