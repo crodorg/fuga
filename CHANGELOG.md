@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-07-01
+
+### Added
+
+- **Per-source column layouts.** Track rows adapt their columns to the source:
+  Artist/Song/Album/Time for music, a single full-width Podcast column plus Time
+  for podcasts, Artist/Song/Time for YouTube, Artist/Radio/Genre/Time for SomaFM,
+  and a single full-width Radio column for internet radio.
+- **Column-header bar** on the box's top border, labelling the columns per source
+  (config `[ui] column_headers`, default on).
+- **Sidebar now-playing art layout** — a third mode on the `e` cycle
+  (expanded → collapsed → sidebar): the now-playing status stacks above the cover
+  in a full-height right column and the list becomes a clean full-height rectangle.
+- **Column text wrapping in icon mode** — with inline thumbnails on, long
+  artist/song/album text wraps across the row's two cells instead of truncating
+  (config `[ui] wrap_columns`, default on).
+
+### Changed
+
+- The panel title and status notification now sit on the box's **bottom** border,
+  freeing the top border for the column headers.
+- `radio_split` now defaults to **on**, so Radio and SomaFM start as separate tabs.
+
+### Fixed
+
+- **j/k scroll CPU spike** on large libraries — the visible list was rebuilt and
+  re-cloned in full every frame; it is now cached and rebuilt only when the
+  underlying data changes.
+- **Scroll stutter / dropped rows** when scrolling fast — key input now renders
+  immediately instead of beating against the frame-rate cap.
+- The hovered-row selection highlight now fills the **full row width** instead of
+  stopping where the column text ends.
+
 ## [0.3.6] — 2026-06-28
 
 ### Fixed

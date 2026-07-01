@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust 2024](https://img.shields.io/badge/edition-2024-dea584.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey.svg)](#)
-[![Status](https://img.shields.io/badge/status-v0.3.6-orange.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-v0.4.0-orange.svg)](CHANGELOG.md)
 
 Terminal-native music library aggregator. One TUI, one queue, many sources:
 local files (via MPD), internet radio, SomaFM, Spotify, YouTube. Inline
@@ -16,6 +16,8 @@ terminal.
 
 - Inline album-art thumbs on every list row (Kitty Unicode placeholders, with
   a halfblocks fallback for non-Kitty terminals)
+- Per-source column layouts with an optional column-header bar; long titles
+  wrap across the row when thumbnails are on
 - Five sources, one unified queue: local files (MPD), Spotify, YouTube,
   SomaFM, and user-defined internet radio
 - Synced lyrics pane (`B`) — timestamped lyrics scroll with playback for
@@ -107,7 +109,7 @@ default; override any of them via `[ui.tabs]`:
 ```toml
 [ui]
 tab_alignment = "center"          # center | left | right
-radio_split   = false             # true → separate Radio + SomaFM tabs
+radio_split   = true              # true (default) → separate Radio + SomaFM tabs
 
 # Keep [ui.tabs] as the LAST block under [ui] — it's a TOML sub-table,
 # so any flat [ui] keys placed below it would be parsed into it.
@@ -115,8 +117,8 @@ radio_split   = false             # true → separate Radio + SomaFM tabs
 local   = ["directories", "albums", "playlists", "queue", "search"]
 spotify = ["spotify", "albums", "artists", "playlists", "podcasts", "queue", "search"]
 youtube = ["youtube", "queue", "search"]
-radio   = ["stations", "queue"]
-somafm  = ["stations", "queue"]
+radio   = ["radio", "queue"]
+somafm  = ["somafm", "queue"]
 ```
 
 Recognized tab ids: `queue`, `directories`, `albums`, `artists`,
@@ -127,16 +129,24 @@ yourself out of navigation.
 
 ### Now-playing art panel
 
-The bottom-right art panel resizes via two percentage knobs. Vertical
-100% sits flush under the tab bar; horizontal 100% runs from the
-24-cell text margin to the right edge. Aspect is preserved — whichever
-axis hits its limit first constrains the other.
+`e` (or clicking the cover) cycles three now-playing art layouts:
+
+- **expanded** — big bordered cover in the bottom-right, protruding into the list
+- **collapsed** — cover shrunk to the bottom-bar height, no overlay
+- **sidebar** — the now-playing status stacks above the cover in a full-height
+  right column and the list becomes a clean full-height rectangle
+
+The choice persists across runs. In the expanded/collapsed layouts the panel
+size follows two percentage knobs: vertical 100% sits flush under the tab bar,
+horizontal 100% runs from the 24-cell text margin to the right edge. Aspect is
+preserved — whichever axis hits its limit first constrains the other. In the
+sidebar layout `art_width_pct` sets the column width and `art_height_pct` is
+unused.
 
 ```toml
 [ui]
 art_height_pct = 70   # clamped to [20, 100]
 art_width_pct  = 40   # clamped to [15, 100]
-# art_collapsed = false   # start with the panel shrunk into the bottom bar
 ```
 
 ### Spotify setup
@@ -195,7 +205,7 @@ PulseAudio or PipeWire (both expose a `pulse` device that mixes for you).
 | `m`                  | Open contextual action menu                    |
 | `P`                  | Pin / unpin hovered item                       |
 | `v`                  | Expand hovered album art                       |
-| `e`                  | Resize now-playing art panel (big / small)     |
+| `e`                  | Cycle now-playing art layout (big → small → sidebar) |
 | `B`                  | Toggle synced-lyrics view                      |
 | `Y`                  | Download hovered track (YouTube)               |
 
