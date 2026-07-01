@@ -28,6 +28,7 @@ use crate::types::{
     ArtSize, Category, DeviceEntry, Entry, EntryKind, Item, PlayState, SortAxis, SourceMode,
 };
 use crate::ui;
+use crate::widgets::thumb_list::ThumbRowSpec;
 
 /// Modal state for the Add-to-Playlist picker. Opened from the action
 /// menu when the hovered row is a Spotify track. Selecting a row calls
@@ -384,6 +385,19 @@ pub struct App {
     /// row build.
     pub filtered_browse_indices: Option<Vec<usize>>,
 
+    /// Cached rendered rows for the active list view (browse/queue), reused
+    /// across frames so a pure scroll — which changes only cursor/top — does
+    /// not rebuild and re-clone every row's strings each frame (the source of
+    /// the scroll CPU spike). Keyed by a cheap O(1) content signature
+    /// (`row_cache_key`); a mismatch triggers a rebuild. Safe because view rows
+    /// are append-only and their display fields are never mutated in place —
+    /// album art arrives separately via `art_cache`, keyed by the stable
+    /// `art_uri`. Only one list renders per frame, so a single slot suffices.
+    pub row_cache: Vec<ThumbRowSpec>,
+    /// Signature of the data that produced `row_cache`; `None` forces a
+    /// rebuild. See `render_browse` / `render_queue`.
+    pub row_cache_key: Option<u64>,
+
     /// Last-rendered click targets, so mouse events know what they hit.
     /// Populated by `ui::render`; consumed by `handle_mouse`. Stores the
     /// configured-tab-list index that each rect represents.
@@ -628,6 +642,8 @@ impl App {
             filter_input: None,
             filter_active: HashMap::new(),
             filtered_browse_indices: None,
+            row_cache: Vec::new(),
+            row_cache_key: None,
             tab_rects: Vec::new(),
             body_rect: None,
             body_row_heights: Vec::new(),
@@ -4658,18 +4674,33 @@ async fn run_loop(
     let mut last_draw = Instant::now()
         .checked_sub(frame_min)
         .unwrap_or_else(Instant::now);
+    // Set true by the input arm so a keystroke renders on the next loop turn
+    // without waiting for `frame_min`; reset after each draw. Keeps key input
+    // 1:1 with frames while background events stay coalesced.
+    let mut force_draw = false;
 
     loop {
-        if app.dirty && last_draw.elapsed() >= frame_min {
+        if app.dirty && (force_draw || last_draw.elapsed() >= frame_min) {
             terminal.draw(|f| ui::render(app, f)).context("draw")?;
             app.dirty = false;
             last_draw = Instant::now();
         }
+        force_draw = false;
 
         tokio::select! {
             biased;
             _ = app.shutdown.cancelled() => break,
-            ev = input_rx.recv() => match ev {
+            ev = input_rx.recv() => {
+                // Key input bypasses the `frame_min` coalescing gate (via
+                // `force_draw`) so holding or tapping j/k renders every step
+                // immediately instead of beating against the 30fps clock and
+                // skipping rows. The gate still coalesces bursty BACKGROUND
+                // events (streaming rows, ticks, playback status) in the arms
+                // below.
+                if matches!(&ev, Some(Event::Key(_))) {
+                    force_draw = true;
+                }
+                match ev {
                 Some(Event::Key(k)) => {
                     // Any key implies the window is focused — a robust fallback
                     // for terminals that miss FocusGained.
@@ -4790,6 +4821,7 @@ async fn run_loop(
                 }
                 Some(_) => {}
                 None => break,
+                }
             },
             ev = recv_mpd(&mut mpd_events) => match ev {
                 Some(e) => app.handle_mpd_event(e).await,

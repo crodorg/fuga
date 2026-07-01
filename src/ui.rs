@@ -1,3 +1,4 @@
+use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
 use image::imageops::FilterType;
@@ -265,34 +266,29 @@ fn render_sidebar_art(app: &mut App, f: &mut Frame<'_>, rect: Rect) {
         app.art_panel_rect = None;
         return;
     }
-    let playing_border = app.playing_theme().block_border();
     f.render_widget(Clear, rect);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(playing_border);
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
     app.art_panel_rect = Some(rect);
 
-    // Largest aspect-correct sub-rect of `inner` (cells are taller than wide,
-    // so account for both pixel axes), centered — then Scale fills it crisply
-    // without distortion. Mirrors compute_art_dims' back-derive.
+    // No border box, but the image is centered in the column (not anchored to
+    // the top). Largest aspect-correct sub-rect of the full column (cells are
+    // taller than wide, so account for both pixel axes), centered on both axes
+    // — then Scale fills it crisply without distortion.
     let (cw, ch) = app.term.picker.font_size();
     let (cell_w, cell_h) = (cw as f64, ch as f64);
     let (iw, ih) = app.now_playing_aspect.unwrap_or((1, 1));
     let img_aspect = if ih > 0 { iw as f64 / ih as f64 } else { 1.0 };
-    let inner_w_px = inner.width as f64 * cell_w;
-    let inner_h_px = inner.height as f64 * cell_h;
-    let (art_w_px, art_h_px) = if inner_w_px / inner_h_px > img_aspect {
-        (inner_h_px * img_aspect, inner_h_px)
+    let rect_w_px = rect.width as f64 * cell_w;
+    let rect_h_px = rect.height as f64 * cell_h;
+    let (art_w_px, art_h_px) = if rect_w_px / rect_h_px > img_aspect {
+        (rect_h_px * img_aspect, rect_h_px)
     } else {
-        (inner_w_px, inner_w_px / img_aspect)
+        (rect_w_px, rect_w_px / img_aspect)
     };
-    let art_w = ((art_w_px / cell_w).round() as u16).clamp(1, inner.width);
-    let art_h = ((art_h_px / cell_h).round() as u16).clamp(1, inner.height);
+    let art_w = ((art_w_px / cell_w).round() as u16).clamp(1, rect.width);
+    let art_h = ((art_h_px / cell_h).round() as u16).clamp(1, rect.height);
     let img_rect = Rect {
-        x: inner.x + (inner.width - art_w) / 2,
-        y: inner.y + (inner.height - art_h) / 2,
+        x: rect.x + (rect.width - art_w) / 2,
+        y: rect.y + (rect.height - art_h) / 2,
         width: art_w,
         height: art_h,
     };
@@ -664,19 +660,18 @@ fn render_tabs(app: &App, f: &mut Frame<'_>, area: Rect) {
     f.render_widget(tabs, center);
 }
 
-fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option<u16>) {
-    let base_title = app.current_view_title();
-    let cat = app.active_category();
-    // Borrow the current view rather than deep-cloning it. `rows` below is
-    // owned, so this borrow ends before the later `&mut app` mutations
-    // (set_filtered_browse_indices, body_top_at_render, …) — which is the only
-    // reason the clone existed. Drops one full per-frame copy of every Entry's
-    // strings; rows are built straight from the source.
-    let view = app.category_states.get(&cat).and_then(|s| s.stack.last());
-
-    let pk = playing_key(app);
+/// Build the browse row list (owned) plus, when a filter is active, the
+/// original-row index map. Extracted so `render_browse` can skip it on frames
+/// where nothing but the scroll position changed (see `browse_rows_sig`).
+fn build_browse_rows(
+    view: Option<&LibraryView>,
+    cat: Category,
+    pk: &Option<(String, &'static str)>,
+    pinned: &std::collections::HashSet<String>,
+    q_lower: Option<&str>,
+) -> (Vec<ThumbRowSpec>, Option<Vec<usize>>) {
     let now_playing_match = |scheme: &'static str, uri: &str| -> bool {
-        match &pk {
+        match pk {
             Some((u, s)) => *s == scheme && u == uri,
             None => false,
         }
@@ -691,7 +686,7 @@ fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option
                     e,
                     scheme,
                     now_playing_match(scheme, &e.uri),
-                    app.pinned.contains(&e.uri),
+                    pinned.contains(&e.uri),
                 )
             })
             .collect(),
@@ -708,7 +703,7 @@ fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option
                     duration: it.display.duration,
                 }),
                 is_now_playing: now_playing_match("local", &it.uri),
-                pinned: app.pinned.contains(&it.uri),
+                pinned: pinned.contains(&it.uri),
                 is_header: false,
                 row_h_override: None,
             })
@@ -726,7 +721,7 @@ fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option
                         e,
                         sec.scheme,
                         now_playing_match(sec.scheme, &e.uri),
-                        app.pinned.contains(&e.uri),
+                        pinned.contains(&e.uri),
                     ));
                 }
             }
@@ -739,22 +734,8 @@ fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option
         )],
     };
 
-    // body_row_heights populated by the renderer below; per-row heights now
-    // vary with whether each row has art.
-
-    // Apply the in-view filter (`/`) here so the browse path mirrors the
-    // queue path: rows shown to the user are the filtered subset, and we
-    // cache the original-row indices on App for activate/enqueue to remap
-    // the cursor after the user picks a row.
-    let filter_buf = app.filter_input.clone();
-    let active_filter = app.current_filter().map(str::to_owned);
-    let q_lower = filter_buf
-        .clone()
-        .or(active_filter.clone())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_lowercase());
-    let (rows, indices_owned): (Vec<ThumbRowSpec>, Option<Vec<usize>>) = match q_lower {
-        Some(ref q) => {
+    match q_lower {
+        Some(q) => {
             let mut filtered = Vec::new();
             let mut indices = Vec::new();
             for (i, r) in rows.iter().enumerate() {
@@ -766,8 +747,151 @@ fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option
             (filtered, Some(indices))
         }
         None => (rows, None),
+    }
+}
+
+/// Cheap O(1) signature of everything that determines browse row *content*:
+/// category + view identity (epoch/depth) + a size-and-endpoints fingerprint of
+/// the entries + the active filter + the now-playing target + pin count.
+/// Scrolling changes none of these, so the signature is stable across a scroll
+/// and the cached row list is reused instead of rebuilt every frame. Sampling
+/// first/mid/last URIs catches same-length reorders (sort, pin-to-top) that a
+/// bare length would miss.
+fn browse_rows_sig(
+    cat: Category,
+    epoch: u64,
+    depth: usize,
+    view: Option<&LibraryView>,
+    q_lower: Option<&str>,
+    pk: &Option<(String, &'static str)>,
+    pins_len: usize,
+) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    0u8.hash(&mut h); // path discriminant: browse
+    cat.hash(&mut h);
+    epoch.hash(&mut h);
+    depth.hash(&mut h);
+    q_lower.hash(&mut h);
+    match pk {
+        Some((u, s)) => {
+            1u8.hash(&mut h);
+            u.hash(&mut h);
+            s.hash(&mut h);
+        }
+        None => 0u8.hash(&mut h),
+    }
+    pins_len.hash(&mut h);
+    match view {
+        Some(LibraryView::Entries { entries, .. }) => {
+            1u8.hash(&mut h);
+            let n = entries.len();
+            n.hash(&mut h);
+            if n > 0 {
+                entries[0].uri.hash(&mut h);
+                entries[n / 2].uri.hash(&mut h);
+                entries[n - 1].uri.hash(&mut h);
+            }
+        }
+        Some(LibraryView::Tracks { items, .. }) => {
+            2u8.hash(&mut h);
+            let n = items.len();
+            n.hash(&mut h);
+            if n > 0 {
+                items[0].uri.hash(&mut h);
+                items[n / 2].uri.hash(&mut h);
+                items[n - 1].uri.hash(&mut h);
+            }
+        }
+        Some(LibraryView::Sections { sections, .. }) => {
+            3u8.hash(&mut h);
+            sections.len().hash(&mut h);
+            let total: usize = sections.iter().map(|s| s.entries.len()).sum();
+            total.hash(&mut h);
+            if let Some(e) = sections.first().and_then(|s| s.entries.first()) {
+                e.uri.hash(&mut h);
+            }
+            if let Some(e) = sections.last().and_then(|s| s.entries.last()) {
+                e.uri.hash(&mut h);
+            }
+        }
+        None => 4u8.hash(&mut h),
+    }
+    h.finish()
+}
+
+/// Signature for the queue view — see `browse_rows_sig`. Covers queue length,
+/// the current-item marker (drives the `>` prefix and now-playing flag), the
+/// filter, and pin count, plus endpoint URIs to catch same-length replacements.
+fn queue_rows_sig(
+    items: &[crate::queue::QueuedItem],
+    cur: Option<usize>,
+    filter_buf: Option<&str>,
+    committed: Option<&str>,
+    pins_len: usize,
+) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    1u8.hash(&mut h); // path discriminant: queue
+    let n = items.len();
+    n.hash(&mut h);
+    cur.hash(&mut h);
+    filter_buf.hash(&mut h);
+    committed.hash(&mut h);
+    pins_len.hash(&mut h);
+    if n > 0 {
+        items[0].uri.hash(&mut h);
+        items[n / 2].uri.hash(&mut h);
+        items[n - 1].uri.hash(&mut h);
+    }
+    h.finish()
+}
+
+fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option<u16>) {
+    let base_title = app.current_view_title();
+    let cat = app.active_category();
+    let pk = playing_key(app);
+
+    // In-view filter (`/`): rows shown are the filtered subset; the original
+    // -row indices are cached on App so activate/enqueue can remap the cursor
+    // back to its position in the unfiltered list.
+    let filter_buf = app.filter_input.clone();
+    let active_filter = app.current_filter().map(str::to_owned);
+    let q_lower = filter_buf
+        .clone()
+        .or(active_filter.clone())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_lowercase());
+
+    // Rebuild the row list only when the underlying data changes — navigation,
+    // streaming append, sort/pin reorder, filter, now-playing, or pins — never
+    // on a pure scroll. Otherwise the O(N) clone of every row's strings would
+    // run every frame and spike the CPU on large lists.
+    let sig = {
+        let cs = app.category_states.get(&cat);
+        let view = cs.and_then(|s| s.stack.last());
+        let epoch = cs.map(|s| s.descend_epoch).unwrap_or(0);
+        let depth = cs.map(|s| s.stack.len()).unwrap_or(0);
+        browse_rows_sig(
+            cat,
+            epoch,
+            depth,
+            view,
+            q_lower.as_deref(),
+            &pk,
+            app.pinned.len(),
+        )
     };
-    app.set_filtered_browse_indices(indices_owned);
+    if app.row_cache_key != Some(sig) {
+        let (rows, indices) = {
+            let view = app.category_states.get(&cat).and_then(|s| s.stack.last());
+            build_browse_rows(view, cat, &pk, &app.pinned, q_lower.as_deref())
+        };
+        app.set_filtered_browse_indices(indices);
+        app.row_cache = rows;
+        app.row_cache_key = Some(sig);
+    }
+    // Borrow the cached rows out for the render so the widget can take
+    // `&mut app` for its other fields; restored right after.
+    let rows = std::mem::take(&mut app.row_cache);
 
     let title = match (&filter_buf, &active_filter) {
         (Some(buf), _) => format!("{base_title}  /{buf}_"),
@@ -836,6 +960,7 @@ fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option
     );
     app.body_row_heights = visible_heights;
     app.thumb_hits = thumb_hits;
+    app.row_cache = rows;
     if let Some(s) = app.category_states.get_mut(&cat) {
         s.top = top;
     }
@@ -849,44 +974,59 @@ fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option
 
 fn render_queue(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option<u16>) {
     let cur = app.queue.current_index();
-    let filter_indices = app.filtered_queue_indices();
-    let all_rows: Vec<ThumbRowSpec> = app
-        .queue
-        .items()
-        .iter()
-        .enumerate()
-        .map(|(i, q)| {
-            let prefix = if Some(i) == cur { "> " } else { "  " };
-            let title = format!("{prefix}{}", q.display.title);
-            ThumbRowSpec {
-                label: format!("{prefix}{}", q.display.title),
-                art_uri: q.display.art_uri.clone().or_else(|| Some(q.uri.clone())),
-                source_scheme: Some(q.source_scheme),
-                track_cols: Some(crate::widgets::thumb_list::TrackColumns {
-                    artist: q.display.artist.clone().unwrap_or_default(),
-                    title,
-                    album: q.display.album.clone().unwrap_or_default(),
-                    duration: q.display.duration,
-                }),
-                is_now_playing: Some(i) == cur,
-                pinned: app.pinned.contains(&q.uri),
-                is_header: false,
-                row_h_override: None,
-            }
-        })
-        .collect();
-    let rows: Vec<ThumbRowSpec> = match &filter_indices {
-        Some(idx) => idx
-            .iter()
-            .filter_map(|i| all_rows.get(*i).cloned())
-            .collect(),
-        None => all_rows,
-    };
     let filter_buf = app.filter_input.clone();
     let committed_filter = app
         .current_filter()
         .filter(|_| filter_buf.is_none())
         .map(|s| s.to_string());
+
+    // Rebuild only when the queue, its current item, the filter, or pins
+    // change — not on scroll. See render_browse for the rationale.
+    let sig = queue_rows_sig(
+        app.queue.items(),
+        cur,
+        filter_buf.as_deref(),
+        committed_filter.as_deref(),
+        app.pinned.len(),
+    );
+    if app.row_cache_key != Some(sig) {
+        let filter_indices = app.filtered_queue_indices();
+        let all_rows: Vec<ThumbRowSpec> = app
+            .queue
+            .items()
+            .iter()
+            .enumerate()
+            .map(|(i, q)| {
+                let prefix = if Some(i) == cur { "> " } else { "  " };
+                let title = format!("{prefix}{}", q.display.title);
+                ThumbRowSpec {
+                    label: format!("{prefix}{}", q.display.title),
+                    art_uri: q.display.art_uri.clone().or_else(|| Some(q.uri.clone())),
+                    source_scheme: Some(q.source_scheme),
+                    track_cols: Some(crate::widgets::thumb_list::TrackColumns {
+                        artist: q.display.artist.clone().unwrap_or_default(),
+                        title,
+                        album: q.display.album.clone().unwrap_or_default(),
+                        duration: q.display.duration,
+                    }),
+                    is_now_playing: Some(i) == cur,
+                    pinned: app.pinned.contains(&q.uri),
+                    is_header: false,
+                    row_h_override: None,
+                }
+            })
+            .collect();
+        let rows: Vec<ThumbRowSpec> = match &filter_indices {
+            Some(idx) => idx
+                .iter()
+                .filter_map(|i| all_rows.get(*i).cloned())
+                .collect(),
+            None => all_rows,
+        };
+        app.row_cache = rows;
+        app.row_cache_key = Some(sig);
+    }
+    let rows = std::mem::take(&mut app.row_cache);
     let title = match (&filter_buf, &committed_filter) {
         (Some(buf), _) => format!("Queue  /{buf}_"),
         (None, Some(committed)) => format!("Queue  /{committed}"),
@@ -926,6 +1066,7 @@ fn render_queue(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option<
     );
     app.body_row_heights = visible_heights;
     app.thumb_hits = thumb_hits;
+    app.row_cache = rows;
     if let Some(b) = app.body_rect.as_mut() {
         b.x = b.x.saturating_add(1);
         b.y = b.y.saturating_add(1);

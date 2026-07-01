@@ -336,6 +336,17 @@ pub fn render_thumb_list(
 
         let highlight = idx == ctx.cursor;
 
+        if highlight {
+            // Full-width selection bar: fill the whole row first so the gaps
+            // between columns and the area past the last column keep the
+            // selection color instead of reverting to the default background —
+            // the per-column render only styles its text rects, so without this
+            // the bar breaks up wherever a column ends. Thumb and text draw on
+            // top with the same bg, so the row reads as one consistent block
+            // edge to edge.
+            f.render_widget(Block::default().style(ctx.theme.selection()), row_rect);
+        }
+
         if let (Some(thumb_rect), Some(uri)) = (thumb_rect, spec.art_uri.as_deref()) {
             // Record the rect so the app's mouse handler can expand the
             // cover full-screen on click.
