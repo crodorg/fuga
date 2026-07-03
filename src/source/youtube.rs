@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! YouTube source via `yt-dlp` shell-out.
 //!
 //! v0.2.0 scope: search + play + seek + local-only saved-tracks
@@ -63,8 +61,6 @@ struct YtThumbnail {
     url: String,
     #[serde(default)]
     width: Option<u32>,
-    #[serde(default)]
-    height: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -706,17 +702,14 @@ mod tests {
             YtThumbnail {
                 url: "a".into(),
                 width: Some(48),
-                height: None,
             },
             YtThumbnail {
                 url: "b".into(),
                 width: Some(120),
-                height: None,
             },
             YtThumbnail {
                 url: "c".into(),
                 width: Some(1280),
-                height: None,
             },
         ];
         assert_eq!(pick_thumb(&thumbs, 120).map(|t| t.url.as_str()), Some("b"));

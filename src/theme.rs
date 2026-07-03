@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use ratatui::style::{Color, Modifier, Style};
 use serde::Deserialize;
 use std::collections::HashMap;

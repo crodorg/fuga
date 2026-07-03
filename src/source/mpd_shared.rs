@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 use mpd_client::{client::Client, commands, responses};
 

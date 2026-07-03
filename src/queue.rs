@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::types::ItemDisplay;
 
 #[derive(Debug, Clone)]

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub mod local;
 pub mod mpd_shared;
 pub mod radio;
