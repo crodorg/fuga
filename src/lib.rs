@@ -107,7 +107,6 @@ pub async fn run_app(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> 
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     let args = Args::parse();
-    let _ = args.config; // override path support: v2
 
     // Subcommand mode: connect to a running fuga and exit. No TUI start, no
     // log file noise — these are scriptable one-shots.
@@ -131,7 +130,7 @@ pub async fn run_app(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> 
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("fuga=info,warn"))
     };
 
-    let config = Config::load().context("loading config")?;
+    let config = Config::load_from(args.config.clone()).context("loading config")?;
     let cache_dir = config.cache_dir();
     std::fs::create_dir_all(&cache_dir).ok();
     std::fs::create_dir_all(art_dir(&cache_dir)).ok();

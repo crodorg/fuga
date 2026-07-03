@@ -394,11 +394,24 @@ fn default_leaders() -> &'static [DefaultLeaderGroup] {
 
 impl Config {
     pub fn load() -> Result<Self> {
-        let path = config_dir().join("config.toml");
+        Self::load_from(None)
+    }
+
+    /// Load config from `override_path` when given (via `--config`), else the
+    /// default `config_dir()/config.toml`. An explicit override that doesn't
+    /// exist is an error — the user asked for that file by name; a missing
+    /// default just falls back to built-in defaults.
+    pub fn load_from(override_path: Option<PathBuf>) -> Result<Self> {
+        let (path, required) = match override_path {
+            Some(p) => (p, true),
+            None => (config_dir().join("config.toml"), false),
+        };
         let mut cfg = if path.exists() {
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
             toml::from_str::<Self>(&text).with_context(|| format!("parsing {}", path.display()))?
+        } else if required {
+            anyhow::bail!("config file not found: {}", path.display());
         } else {
             Self::default()
         };

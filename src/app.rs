@@ -2378,9 +2378,9 @@ impl App {
     }
 
     /// Apply the modal's selected sort axis to the active category's top
-    /// view. Year / RecentlyAdded fall back to alpha-asc with a status toast
-    /// since fuga's `ItemDisplay` doesn't yet plumb those fields through
-    /// from the sources.
+    /// view. Every axis (including Year / RecentlyAdded, which sort by the
+    /// `ItemDisplay` year/sort hints) is honored; rows missing a hint sink to
+    /// the bottom in source order.
     fn apply_selected_sort(&mut self) {
         let axis = match SortAxis::all().get(self.sort_modal_sel) {
             Some(a) => *a,

@@ -101,9 +101,9 @@ pub struct DeviceEntry {
 }
 
 /// User-selectable sort axis for browse views. Per-tab persisted on
-/// `CategoryState::sort`. `Year` and `RecentlyAdded` rely on metadata that
-/// fuga's source impls don't yet plumb through `ItemDisplay`; selecting
-/// them currently falls back to alphabetical with a status toast.
+/// `CategoryState::sort`. `Year` and `RecentlyAdded` sort by the metadata
+/// hints on `ItemDisplay` (`year_hint` / `sort_hint`); rows that lack the
+/// hint sink to the bottom in source order rather than jittering.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum SortAxis {
     AlphaAsc,
