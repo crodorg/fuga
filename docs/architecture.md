@@ -9,10 +9,17 @@ that changes can be evaluated against the original design.
 ## 1. What fuga is
 
 A **library connector**, not a "music player with three modes." Each source —
-local, radio, somafm, spotify — implements the same `MusicSource` trait.
-The user sees a single search box, a single queue, a single library tree
-(with sources as top-level nodes), and a single now-playing pane. A
-dispatcher routes playback to the right backend.
+local, radio, somafm, spotify, youtube — implements the same `MusicSource`
+trait. The user works one **source mode** at a time (`t` cycles them); each
+mode carries its own tabs, columns and accent palette. Search is scoped to
+the active source. Across every mode there is a single unified queue and a
+single now-playing pane, and a dispatcher routes playback to the right
+backend.
+
+> Note: an earlier design called for one merged search box and a single
+> library tree with all sources as top-level nodes. fuga settled instead on
+> the per-mode layout as the per-source tabs/columns/palettes were built, so
+> search runs against the active source only. This reversal is intentional.
 
 Inspired by:
 - **ncspot** — keyboard UX, vim navigation, fast quit/resume
@@ -35,15 +42,16 @@ Hard non-goals for v0.1:
 - **No web UI.** TUI only.
 - **No daemon mode.** Single foreground binary.
 - **No plugin system.** Sources are compile-time, in this repo.
-- **No lyrics in v1.** Maybe later.
 - **No visualizer / FFT.** spotatui has it; not needed here.
-- **No crossfade between sources in v1.** A half-second gap at a source boundary is acceptable.
+- **No crossfade between sources.** A half-second gap at a source boundary is acceptable.
 - **No autotools / Meson / CMake.** Cargo only.
 - **No GUI fallback.** If the terminal can't render, print an error and exit.
 
-v0.2 adds a YouTube Music source via `yt-dlp` shell-out (search and play
-only — no downloads, no library browse). See the Legal section in the
-README for terms.
+Two "not yet" items from v0.1 have since shipped and are no longer non-goals:
+synced **lyrics** (`src/lyrics.rs` — lrclib.net + embedded tags) and a
+**YouTube** source via `yt-dlp` shell-out (search + play, plus an opt-in
+single-track download bound to `d`; no library browse). See the README Legal
+section for YouTube terms.
 
 ---
 
@@ -65,66 +73,67 @@ README for terms.
 
 Every source implements `MusicSource`. The trait is the spine of fuga.
 
-```rust
-// src/source/mod.rs
-use async_trait::async_trait;
-use anyhow::Result;
-use crate::types::{Item, Entry, Playable, ArtSize, DynamicImage};
+The definition in `src/source/mod.rs` is the source of truth; the core of it:
 
+```rust
 #[async_trait]
 pub trait MusicSource: Send + Sync {
-    /// URI scheme this source owns: "local", "radio", "somafm", "spotify"
-    fn scheme(&self) -> &'static str;
-
-    /// Human-readable name for UI: "Local Library", "SomaFM", etc.
+    fn scheme(&self) -> &'static str;   // "local" | "radio" | "somafm" | "spotify" | "youtube"
     fn display_name(&self) -> &'static str;
 
-    /// Cross-source search. Empty results are OK; errors are for transport failures only.
     async fn search(&self, query: &str) -> Result<Vec<Item>>;
-
-    /// Browse a path within this source. Path is source-specific
-    /// ("local:/", "spotify:user:liked", "somafm:/").
     async fn browse(&self, path: &str) -> Result<Vec<Entry>>;
-
-    /// Resolve a URI to a Playable (concrete stream URL or library URI).
+    // Paginated browse: forwards each page down `tx` so a large view renders
+    // as it streams instead of blocking on the full result.
+    async fn browse_streaming(&self, path: &str, tx: Sender<Result<Vec<Entry>>>);
     async fn resolve(&self, uri: &str) -> Result<Playable>;
-
-    /// Begin playback of the resolved playable. Sources own their playback.
     async fn play(&self, playable: &Playable) -> Result<()>;
-
-    /// Stop playback of this source. Idempotent.
     async fn stop(&self) -> Result<()>;
+    async fn pause(&self) -> Result<()>;   // default impl: Err("not supported")
+    async fn resume(&self) -> Result<()>;
+    async fn playback_status(&self) -> Result<Option<PlaybackStatus>>;
+    async fn set_volume(&self, vol: u8) -> Result<()>;
+    async fn seek(&self, position: Duration) -> Result<()>;
 
-    /// Pause/resume. Default impl returns Err(NotSupported).
-    async fn pause(&self) -> Result<()> { Err(anyhow::anyhow!("not supported")) }
-    async fn resume(&self) -> Result<()> { Err(anyhow::anyhow!("not supported")) }
-
-    /// Fetch art for a URI at the requested size hint. Implementations cache.
-    async fn art(&self, uri: &str, size: ArtSize) -> Result<DynamicImage>;
+    // Raw encoded (JPEG/PNG) bytes. Decoding + caching happen in the CALLER
+    // (src/art_cache.rs), not the source, so the cache is shared across sources.
+    async fn art(&self, uri: &str, size: ArtSize) -> Result<Vec<u8>>;
+    async fn is_saved(&self, uri: &str) -> Result<bool>;
+    async fn save(&self, uri: &str) -> Result<()>;
+    async fn unsave(&self, uri: &str) -> Result<()>;
 }
 
-pub enum ArtSize {
-    Thumb,   // ~64x64 px target — for inline list rows
-    Medium,  // ~256x256 px — for sidebar
-    Full,    // original — for now-playing pane
-}
+pub enum ArtSize { Thumb, Medium, Full }
 ```
+
+The trait also carries a set of capability methods that only some sources
+implement and that default to a no-op or error: `list_devices` /
+`transfer_to_device`, `add_to_playlist` / `remove_from_playlist`,
+`relation_uri`, `download`, `embedded_lyrics`, `view_snapshot`,
+`rate_limit_remaining`. In practice these are the Spotify (and, for
+`download`, YouTube) feature plane wearing the shared-trait costume — a known
+fat-union shape rather than a clean minimal spine.
 
 ### 4.2 Implementations
 
+(`Item`, `Entry`, `Playable`, `ArtSize` live in `src/types.rs`, not here.)
+
 ```
 src/source/
-├── mod.rs           # trait + ArtSize + Item/Entry/Playable types
+├── mod.rs           # MusicSource trait
 ├── local.rs         # LocalSource    — wraps mpd_client::Client
 ├── radio.rs         # RadioSource    — generic .pls/.m3u + MPD transport
 ├── somafm.rs        # SomaFmSource   — channels.json + MPD transport
+├── mpd_shared.rs    # shared MPD status/volume helpers (local/radio/somafm/youtube)
+├── youtube.rs       # YouTubeSource  — yt-dlp shell-out (search/play/download) + MPD transport
 └── spotify/         # SpotifySource — its own subdirectory, the big one
-    ├── mod.rs       # the source impl
+    ├── mod.rs       # the source impl + Spotify view types
     ├── auth.rs      # OAuth PKCE flow + token storage + refresh
-    ├── api.rs       # rspotify wrappers + rate-limit backoff
+    ├── metadata.rs  # Web API / mercury metadata (artist / track / album lists)
+    ├── raw.rs       # raw mercury + protobuf endpoints (rootlist decode, etc.)
     ├── player.rs    # embedded librespot player wiring
-    ├── art.rs       # CDN URL → cached DynamicImage
-    └── views.rs     # Spotify-specific view types (saved_albums, recommendations, etc.)
+    ├── cache.rs     # Spotify view snapshot caching
+    └── governor.rs  # Web API rate-limit governor (cooldown, real Retry-After)
 ```
 
 ### 4.3 Unified queue
@@ -263,22 +272,14 @@ Channel JSON schema (pin once; the upstream API has no published schema):
 ### 5.4 SpotifySource — the heavy one
 
 Uses `rspotify` for Web API and embedded `librespot` for playback. A single
-struct owns both.
+struct owns both (plus the rate-limit governor and view caches — see the
+file tree above). Auth is **PKCE**: a public `client_id` only, no client
+secret. Sketch of the config:
 
 ```rust
-// src/source/spotify/mod.rs
-pub struct SpotifySource {
-    api: rspotify::AuthCodeSpotify,
-    player: Arc<Mutex<librespot_playback::player::Player>>,
-    session: Arc<Mutex<Option<librespot_core::session::Session>>>,
-    art_cache: ArtCache,
-    config: SpotifyConfig,
-}
-
 pub struct SpotifyConfig {
-    pub client_id: String,
-    pub client_secret: String,
-    pub device_name: String,        // shows up as Spotify Connect device name
+    pub client_id: String,          // PKCE public client id — no secret
+    pub device_name: String,        // shows up as the Spotify Connect device name
     pub bitrate: librespot_playback::config::Bitrate,
     pub volume_normalisation: bool,
     pub cache_dir: PathBuf,         // librespot's audio cache, separate from art cache
@@ -302,7 +303,7 @@ Reuse `rspotify::AuthCodeSpotify` if the PKCE flow fits; if it requires a
 callback closure that doesn't compose with the event loop, write the flow
 directly with `reqwest` + `serde_json`.
 
-#### 5.4.2 Web API surface (`api.rs`)
+#### 5.4.2 Web API surface (`metadata.rs` / `raw.rs` / `governor.rs`)
 
 Wrap `rspotify` calls with:
 - **Rate-limit backoff:** on 429, read `Retry-After`, sleep, retry once.
@@ -399,9 +400,10 @@ Each sub-view is a `View` impl with its own keybindings.
 
 ### 6.2 Tab layout
 
-Tabs are rmpc-style and merge content across sources. The default set is
-configurable in `[ui] tabs`; tabs whose backing sources aren't enabled
-hide automatically.
+Tabs are per **source mode** (`t` cycles modes), not merged across sources —
+each mode carries its own tab set, column layout and accent. The active
+mode's tabs are configurable in `[ui] tabs`; a tab whose backing source
+isn't enabled hides automatically.
 
 ### 6.3 Inline thumbnails
 
@@ -496,10 +498,10 @@ Users running `st` need the kitty-graphics-protocol patch from
 
 ### 9.1 Error handling
 
-- **Library code (sources, api, player):** `thiserror` enums for typed
-  errors that callers might match on.
-- **Application code (UI, dispatcher, main):** `anyhow::Result<T>` for
-  prose-y error chains.
+- **Everywhere:** `anyhow::Result<T>` for prose-y error chains. (An earlier
+  plan split library code onto `thiserror` typed enums; it was dropped — no
+  caller needed to match on error variants, so `thiserror` came out as an
+  unused dependency.)
 - **Never `unwrap()` in async tasks or hot paths.** OK in tests and
   `main()` for unrecoverable startup failures.
 - **Log errors at `tracing::error!` before propagating** in handlers the
@@ -512,8 +514,11 @@ Users running `st` need the kitty-graphics-protocol patch from
 - All I/O async. No `std::fs`, no `reqwest::blocking`.
 - Long-running tasks (librespot session, MPD idle loop) are
   `tokio::spawn`ed; `JoinHandle`s live in `App` for shutdown.
-- Cancellation: every long-running task takes a
-  `tokio_util::sync::CancellationToken`; `select!` against it.
+- Cancellation: a single `shutdown` `CancellationToken` lives in `App` and is
+  `select!`ed in the main loop. Individual background tasks are not separately
+  cancellable — teardown is `std::process::exit(0)` (librespot's `Player::Drop`
+  blocks, so a cleanly joined shutdown isn't worth the hang). Streaming-browse
+  tasks self-cancel by checking an epoch/generation instead.
 - Don't hold a `Mutex` (sync or async) across `.await` unless it's a
   `tokio::sync::Mutex` and you've thought about deadlock.
 
@@ -548,17 +553,21 @@ Users running `st` need the kitty-graphics-protocol patch from
 
 ## 10. Roadmap
 
-### v0.1 (shipped)
-- Local + Radio + SomaFM + Spotify sources, end-to-end.
-- Inline Kitty thumbnails with halfblocks fallback.
-- MPRIS bridge.
-- Unix-socket control plane (`fuga play`, `fuga next`, etc.).
+### Shipped (through v0.4)
+- Local + Radio + SomaFM + Spotify + YouTube sources, end-to-end.
+- Inline Kitty thumbnails with halfblocks fallback; per-source columns,
+  column headers and accent palettes; sidebar art mode.
+- Synced lyrics (lrclib.net + embedded tags).
+- MPRIS bridge (Linux) + a macOS media-key bridge; runs on Linux and macOS.
+- Unix-socket control plane (`fuga play`, `fuga next`, …).
 - Lifecycle hooks (`on_track_change`, `on_source_switch`, `on_startup`).
+- Hardening: fuzz targets, a PTY soak/perf harness, queue proptests,
+  cargo-deny supply-chain config, idle-CPU regression guards.
 
-### v0.2 (planned)
-- **YouTube Music source** via `yt-dlp` shell-out — search, play, local
-  bookmarking only. No downloads, no library browse.
-- Crossfade between same-source tracks.
+### Planned
+- Platform expansion — the current north star: FreeBSD → NetBSD → OpenBSD →
+  Windows (halfblocks-only thumbs on Windows).
+- Same-source crossfade.
 - Additional radio directory source (radio-browser.info).
 
 ---
