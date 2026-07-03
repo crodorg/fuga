@@ -88,10 +88,17 @@ impl Term {
         // the query to *every* attached client, so a non-kitty client's DSR can
         // beat our real terminal's kitty reply — the kitty OK is never read and
         // Kitty is mis-detected as unsupported (art falls back to halfblocks).
-        // When ratatui reports non-kitty inside tmux, re-probe ourselves: the
-        // kitty query in its own passthrough wrapper, reading the whole response
-        // window instead of bailing at the first DSR. See decisions.md 2026-06-19.
-        if !kitty_capable && std::env::var_os("TMUX").is_some() && kitty_selfprobe() {
+        // When ratatui reports non-kitty inside tmux, re-probe ourselves two
+        // ways: (1) the kitty query in its own passthrough wrapper, reading the
+        // whole response window instead of bailing at the first DSR (fixes st,
+        // see decisions.md 2026-06-19); (2) an env-var signal for terminals
+        // whose kitty reply tmux never forwards back to the pane at all — e.g.
+        // Ghostty under tmux 3.6, where the selfprobe times out but
+        // GHOSTTY_RESOURCES_DIR survives into the pane env (see 2026-07-03).
+        if !kitty_capable
+            && std::env::var_os("TMUX").is_some()
+            && (kitty_selfprobe() || kitty_terminal_env())
+        {
             kitty_capable = true;
             picker.set_protocol_type(ProtocolType::Kitty);
         }
@@ -188,6 +195,35 @@ fn kitty_selfprobe() -> bool {
     false
 }
 
+/// Some terminals speak the Kitty graphics protocol but can be recognized by an
+/// environment variable that survives into tmux — where `TERM`/`TERM_PROGRAM`
+/// are rewritten to tmux's own values and so can't be trusted. Consulted as a
+/// fallback capability signal inside tmux when the escape-query probe races or
+/// fails: e.g. Ghostty, whose Kitty query reply tmux doesn't forward back to the
+/// pane, so `kitty_selfprobe` never sees the `i=31;OK`. See decisions.md
+/// 2026-07-03.
+fn kitty_terminal_env() -> bool {
+    kitty_env_present(|name| std::env::var_os(name).is_some())
+}
+
+/// Pure core of [`kitty_terminal_env`]: true when `lookup` reports any known
+/// Kitty-capable terminal's marker variable present. Split out so the marker
+/// list is unit-testable without mutating process env.
+fn kitty_env_present(lookup: impl Fn(&str) -> bool) -> bool {
+    // Ghostty exports GHOSTTY_RESOURCES_DIR / GHOSTTY_BIN_DIR; kitty exports
+    // KITTY_WINDOW_ID; WezTerm exports WEZTERM_EXECUTABLE / WEZTERM_PANE. All are
+    // plain env vars inherited by pane processes, so they persist inside tmux.
+    [
+        "GHOSTTY_RESOURCES_DIR",
+        "GHOSTTY_BIN_DIR",
+        "KITTY_WINDOW_ID",
+        "WEZTERM_EXECUTABLE",
+        "WEZTERM_PANE",
+    ]
+    .iter()
+    .any(|name| lookup(name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::ThumbMode;
@@ -210,6 +246,20 @@ mod tests {
         assert_eq!(ThumbMode::Sixel.cycle(), ThumbMode::Halfblocks);
         assert_eq!(ThumbMode::Halfblocks.cycle(), ThumbMode::Off);
         assert_eq!(ThumbMode::Off.cycle(), ThumbMode::Kitty);
+    }
+
+    #[test]
+    fn kitty_env_present_matches_known_terminals_only() {
+        // Ghostty / kitty / WezTerm markers each trip it.
+        assert!(super::kitty_env_present(|n| n == "GHOSTTY_RESOURCES_DIR"));
+        assert!(super::kitty_env_present(|n| n == "GHOSTTY_BIN_DIR"));
+        assert!(super::kitty_env_present(|n| n == "KITTY_WINDOW_ID"));
+        assert!(super::kitty_env_present(|n| n == "WEZTERM_PANE"));
+        // Nothing present, or only tmux-clobbered generics, does not.
+        assert!(!super::kitty_env_present(|_| false));
+        assert!(!super::kitty_env_present(
+            |n| n == "TERM_PROGRAM" || n == "TERM"
+        ));
     }
 
     #[test]
