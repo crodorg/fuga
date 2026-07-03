@@ -956,7 +956,7 @@ fn render_browse(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option
         &app.term.picker,
         &mut app.protocols,
         &mut app.fetching,
-        &app.wake_tx,
+        &app.app_event_tx,
     );
     app.body_row_heights = visible_heights;
     app.thumb_hits = thumb_hits;
@@ -1062,7 +1062,7 @@ fn render_queue(app: &mut App, f: &mut Frame<'_>, area: Rect, art_top_y: Option<
         &app.term.picker,
         &mut app.protocols,
         &mut app.fetching,
-        &app.wake_tx,
+        &app.app_event_tx,
     );
     app.body_row_heights = visible_heights;
     app.thumb_hits = thumb_hits;
@@ -1181,7 +1181,7 @@ fn render_search(app: &mut App, f: &mut Frame<'_>, area: Rect) {
         &app.term.picker,
         &mut app.protocols,
         &mut app.fetching,
-        &app.wake_tx,
+        &app.app_event_tx,
     );
     app.body_row_heights = visible_heights;
     app.thumb_hits = thumb_hits;

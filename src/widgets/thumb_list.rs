@@ -158,7 +158,7 @@ pub fn render_thumb_list(
     picker: &Picker,
     protocols: &mut HashMap<String, StatefulProtocol>,
     fetching: &mut HashSet<String>,
-    wake: &UnboundedSender<()>,
+    wake: &UnboundedSender<crate::app::AppEvent>,
 ) {
     let title_count = ctx.count_override.unwrap_or(ctx.rows.len());
     // Title + streaming indicator live on the BOTTOM border now; the top
@@ -644,7 +644,7 @@ fn spawn_fetch(
     art_cache: &Arc<ArtCache>,
     dispatcher: &Dispatcher,
     fetching: &mut HashSet<String>,
-    wake: &UnboundedSender<()>,
+    wake: &UnboundedSender<crate::app::AppEvent>,
 ) {
     if fetching.contains(uri) {
         return;
@@ -666,6 +666,6 @@ fn spawn_fetch(
         if let Err(e) = res {
             tracing::debug!("thumb fetch failed for {key}: {e}");
         }
-        let _ = wake.send(());
+        let _ = wake.send(crate::app::AppEvent::Wake);
     });
 }

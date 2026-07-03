@@ -344,7 +344,7 @@ pub async fn run_app(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> 
     if !thumb_cycle.contains(&startup_mode) {
         thumb_cycle.insert(0, startup_mode);
     }
-    let (mut app, wake_rx, row_batch_rx) = App::new(
+    let (mut app, app_event_rx) = App::new(
         local,
         dispatcher,
         art,
@@ -411,8 +411,7 @@ pub async fn run_app(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> 
         config,
         conn.events,
         app,
-        wake_rx,
-        row_batch_rx,
+        app_event_rx,
         spotify_event_rx,
         mpris,
     )

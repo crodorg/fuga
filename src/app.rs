@@ -172,6 +172,27 @@ pub struct RowBatch {
     pub is_extend: bool,
 }
 
+/// Everything a background task delivers to the main loop travels as one of
+/// these down a single channel, drained by `App::handle_app_event`. Replaces
+/// the former trio of `Arc<Mutex<Option<T>>>` inboxes (toast / lyrics / view
+/// poll) plus the bare `()` wake channel and the separate row-batch channel —
+/// one typed pipe instead of five ad-hoc delivery paths.
+#[derive(Debug)]
+pub enum AppEvent {
+    /// A background task finished with a user-visible status line.
+    Toast(String),
+    /// A background lyrics fetch resolved (applied only if it still matches
+    /// the playing track).
+    Lyrics(crate::lyrics::TrackLyrics),
+    /// A Spotify open-view poll produced a fresh `(path, snapshot)`.
+    ViewPoll(String, String),
+    /// A streaming-browse pagination page.
+    Rows(RowBatch),
+    /// A bare "state changed, redraw" poke with no payload (e.g. an art
+    /// fetch completing).
+    Wake,
+}
+
 /// How the now-playing art panel is laid out. Cycled by `e` (and the art
 /// mouse click) in the order below.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,13 +267,11 @@ pub struct App {
 
     pub protocols: HashMap<String, StatefulProtocol>,
     pub fetching: HashSet<String>,
-    pub wake_tx: UnboundedSender<()>,
-    /// Sender side of the row-batch channel. Streaming browse tasks
-    /// (spawned from `LibraryActivate::DescendEntry`) clone this and
-    /// forward each pagination page as a `RowBatch`. The main loop reads
-    /// from the corresponding `row_batch_rx` and appends rows to the
-    /// matching view via `handle_row_batch`.
-    pub row_batch_tx: UnboundedSender<RowBatch>,
+    /// Sender side of the unified background-event channel. Every background
+    /// task (streaming browse, lyrics/download/view-poll, art fetch) clones
+    /// this and sends a typed `AppEvent`; the main loop drains the matching
+    /// `app_event_rx` via `handle_app_event`.
+    pub app_event_tx: UnboundedSender<AppEvent>,
     pub thumb_cells: u16,
     /// `[ui] column_headers`. When true, track-columned lists draw an
     /// `Artist / Song / Album / Time` header bar on the box's top border.
@@ -320,10 +339,6 @@ pub struct App {
     /// pollable Spotify view (Liked / a playlist). The open-view poller
     /// compares fresh snapshots against this to auto-refresh on external edits.
     pub open_view_snapshot: Option<(String, String)>,
-    /// Slot a background view-poll task writes its `(path, snapshot)` into;
-    /// drained on the next tick. Keeps the Spotify API lock off the event loop.
-    pub poll_result: std::sync::Arc<std::sync::Mutex<Option<(String, String)>>>,
-
     pub keymap: Keymap,
     pub leader: Option<LeaderMap>,
     pub leader_deadline: Option<Instant>,
@@ -470,15 +485,6 @@ pub struct App {
     /// Updated by the YouTube source's spawned download task; read by
     /// the status-toast renderer.
     pub download_progress: std::sync::Arc<std::sync::atomic::AtomicU8>,
-    /// One-shot toast slot written by background tasks. The wake handler
-    /// in the event loop drains this into `status` so user-visible
-    /// messages still go through `set_status` (which timestamps for
-    /// auto-clear). `None` means no pending toast.
-    pub toast_inbox: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-    /// Delivery slot for a background lyrics fetch, mirroring `toast_inbox`.
-    /// The wake handler drains it into `lyrics` (guarded by track uri).
-    pub lyrics_inbox: std::sync::Arc<std::sync::Mutex<Option<crate::lyrics::TrackLyrics>>>,
-
     pub shutdown: CancellationToken,
 
     /// Outbound channel to the MPRIS D-Bus bridge. None when MPRIS init failed
@@ -562,15 +568,14 @@ impl App {
         active_source: SourceMode,
         available_modes: Vec<SourceMode>,
         thumb_cycle: Vec<crate::term_probe::ThumbMode>,
-    ) -> (Self, UnboundedReceiver<()>, UnboundedReceiver<RowBatch>) {
+    ) -> (Self, UnboundedReceiver<AppEvent>) {
         let mut category_states: HashMap<Category, CategoryState> = HashMap::new();
         for c in &tabs {
             if c.is_browse() {
                 category_states.insert(*c, CategoryState::new());
             }
         }
-        let (wake_tx, wake_rx) = mpsc::unbounded_channel();
-        let (row_batch_tx, row_batch_rx) = mpsc::unbounded_channel::<RowBatch>();
+        let (app_event_tx, app_event_rx) = mpsc::unbounded_channel::<AppEvent>();
         let app = Self {
             tabs,
             tab_overrides,
@@ -589,8 +594,7 @@ impl App {
             term,
             protocols: HashMap::new(),
             fetching: HashSet::new(),
-            wake_tx,
-            row_batch_tx,
+            app_event_tx,
             thumb_cells,
             column_headers,
             wrap_columns,
@@ -612,7 +616,6 @@ impl App {
             tick_counter: 0,
             last_progress_quantum: None,
             open_view_snapshot: None,
-            poll_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             keymap,
             leader: None,
             leader_deadline: None,
@@ -665,15 +668,13 @@ impl App {
             playpause_rect: None,
             next_rect: None,
             download_progress: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(255)),
-            toast_inbox: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            lyrics_inbox: std::sync::Arc::new(std::sync::Mutex::new(None)),
             shutdown: CancellationToken::new(),
             mpris_cmd_tx: None,
             mpris_last_uri: None,
             mpris_last_state: None,
             mpris_last_volume: None,
         };
-        (app, wake_rx, row_batch_rx)
+        (app, app_event_rx)
     }
 
     /// Push diff'd playback state to the MPRIS bridge. Cheap when nothing
@@ -1652,7 +1653,7 @@ impl App {
             return;
         };
         self.dirty = true;
-        spawn_browse_stream(src, uri, view_id, self.row_batch_tx.clone());
+        spawn_browse_stream(src, uri, view_id, self.app_event_tx.clone());
     }
 
     /// Returns `(scheme, label, uri)` for a browse category's root view —
@@ -2229,7 +2230,7 @@ impl App {
                 };
                 self.dirty = true;
                 if let Some(view_id) = view_id {
-                    spawn_browse_stream(src, uri.clone(), view_id, self.row_batch_tx.clone());
+                    spawn_browse_stream(src, uri.clone(), view_id, self.app_event_tx.clone());
                 }
             }
             LibraryActivate::ExpandAlbum { label } => {
@@ -2277,7 +2278,7 @@ impl App {
                 };
                 self.dirty = true;
                 if let Some(view_id) = view_id {
-                    spawn_browse_extend(src, uri, view_id, self.row_batch_tx.clone());
+                    spawn_browse_extend(src, uri, view_id, self.app_event_tx.clone());
                 }
             }
             LibraryActivate::PlayEntry { entry } => {
@@ -2540,7 +2541,7 @@ impl App {
                     return;
                 };
                 self.dirty = true;
-                spawn_browse_stream(src, uri, view_id, self.row_batch_tx.clone());
+                spawn_browse_stream(src, uri, view_id, self.app_event_tx.clone());
                 self.set_status("refreshed");
                 return;
             }
@@ -2600,12 +2601,10 @@ impl App {
         if src.rate_limit_remaining().is_some() {
             return;
         }
-        let slot = self.poll_result.clone();
+        let tx = self.app_event_tx.clone();
         tokio::spawn(async move {
             if let Some(snap) = src.view_snapshot(&path).await {
-                if let Ok(mut g) = slot.lock() {
-                    *g = Some((path, snap));
-                }
+                let _ = tx.send(AppEvent::ViewPoll(path, snap));
             }
         });
     }
@@ -2978,8 +2977,7 @@ impl App {
         self.set_status("downloading");
         self.dirty = true;
         let progress = self.download_progress.clone();
-        let wake = self.wake_tx.clone();
-        let toast = self.toast_inbox.clone();
+        let tx = self.app_event_tx.clone();
         tokio::spawn(async move {
             let res = src.download(&uri, Some(progress.clone())).await;
             progress.store(255, Ordering::Relaxed);
@@ -2993,45 +2991,26 @@ impl App {
                     format!("download: {}", short_err(&e))
                 }
             };
-            if let Ok(mut g) = toast.lock() {
-                *g = Some(msg);
-            }
-            let _ = wake.send(());
+            let _ = tx.send(AppEvent::Toast(msg));
         });
     }
 
-    /// Drain the toast inbox written by background tasks (e.g. the
-    /// YouTube download task) into the normal status line. Called on
-    /// each wake.
-    pub fn drain_toast_inbox(&mut self) {
-        let msg = {
-            let mut g = match self.toast_inbox.lock() {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            g.take()
-        };
-        if let Some(msg) = msg {
-            self.set_status(msg);
-        }
-    }
-
-    /// Drain a background lyrics fetch into `self.lyrics`, but only when it
-    /// still matches the playing track — the user may have skipped on while the
-    /// request was in flight. Called on each wake.
-    pub fn drain_lyrics_inbox(&mut self) {
-        let got = {
-            let mut g = match self.lyrics_inbox.lock() {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            g.take()
-        };
-        if let Some(lyr) = got {
-            if self.now_playing_uri.as_deref() == Some(lyr.uri.as_str()) {
-                self.lyrics = Some(lyr);
-                self.dirty = true;
+    /// Single drain point for background `AppEvent`s. Called by the loop's
+    /// `app_event_rx` arm. Async because a view-poll refresh hits the source.
+    pub async fn handle_app_event(&mut self, ev: AppEvent) {
+        match ev {
+            AppEvent::Toast(msg) => self.set_status(msg),
+            AppEvent::Lyrics(lyr) => {
+                // The user may have skipped on while the fetch was in flight;
+                // only apply lyrics that still match the playing track.
+                if self.now_playing_uri.as_deref() == Some(lyr.uri.as_str()) {
+                    self.lyrics = Some(lyr);
+                    self.dirty = true;
+                }
             }
+            AppEvent::ViewPoll(path, snap) => self.handle_view_poll(path, snap).await,
+            AppEvent::Rows(batch) => self.handle_row_batch(batch),
+            AppEvent::Wake => self.dirty = true,
         }
     }
 
@@ -3054,8 +3033,7 @@ impl App {
         self.lyrics = Some(crate::lyrics::TrackLyrics::loading(uri.clone()));
         self.dirty = true;
         let src = self.dispatcher.get(scheme).cloned();
-        let inbox = self.lyrics_inbox.clone();
-        let wake = self.wake_tx.clone();
+        let tx = self.app_event_tx.clone();
         tokio::spawn(async move {
             // Embedded lyrics (local files) win over the network lookup.
             let embedded = match &src {
@@ -3069,10 +3047,7 @@ impl App {
             } else {
                 crate::lyrics::TrackLyrics::not_found(uri)
             };
-            if let Ok(mut g) = inbox.lock() {
-                *g = Some(res);
-            }
-            let _ = wake.send(());
+            let _ = tx.send(AppEvent::Lyrics(res));
         });
     }
 
@@ -3430,7 +3405,7 @@ impl App {
         };
         self.fetching.insert(uri.clone());
         let cache = self.art_cache.clone();
-        let wake = self.wake_tx.clone();
+        let tx = self.app_event_tx.clone();
         let key = uri.clone();
         tokio::spawn(async move {
             let _ = cache
@@ -3438,7 +3413,7 @@ impl App {
                     src.art(&key, crate::types::ArtSize::Full).await
                 })
                 .await;
-            let _ = wake.send(());
+            let _ = tx.send(AppEvent::Wake);
         });
     }
 
@@ -3492,15 +3467,11 @@ impl App {
             }
         }
         self.tick_counter = self.tick_counter.wrapping_add(1);
-        // Open-view change polling (Spotify Liked / playlists). Drain any
-        // snapshot a background poll produced, then kick a fresh poll every
-        // ~60s (240 ticks * 250ms) — long enough that this background change
-        // detector is a non-factor for the Web-API rate limit, still responsive
-        // enough for external edits. Skipped entirely while tabbed away.
-        let polled = self.poll_result.lock().ok().and_then(|mut g| g.take());
-        if let Some((path, snap)) = polled {
-            self.handle_view_poll(path, snap).await;
-        }
+        // Open-view change polling (Spotify Liked / playlists). Kick a fresh
+        // poll every ~60s (240 ticks * 250ms) — long enough that this
+        // background change detector is a non-factor for the Web-API rate
+        // limit, still responsive enough for external edits. Skipped entirely
+        // while tabbed away. The result arrives as `AppEvent::ViewPoll`.
         if self.tick_counter.is_multiple_of(240) {
             self.spawn_view_poll();
         }
@@ -4310,7 +4281,7 @@ fn spawn_browse_stream(
     src: std::sync::Arc<dyn crate::source::MusicSource>,
     uri: String,
     view_id: ViewId,
-    row_tx: tokio::sync::mpsc::UnboundedSender<RowBatch>,
+    row_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
 ) {
     const MIN_VISIBLE_MS: u64 = 600;
     tokio::spawn(async move {
@@ -4322,12 +4293,12 @@ fn spawn_browse_stream(
         let forward_fut = async {
             while let Some(batch) = batch_rx.recv().await {
                 if row_tx
-                    .send(RowBatch {
+                    .send(AppEvent::Rows(RowBatch {
                         view_id,
                         batch,
                         finished: false,
                         is_extend: false,
-                    })
+                    }))
                     .is_err()
                 {
                     return;
@@ -4338,12 +4309,12 @@ fn spawn_browse_stream(
             if elapsed < min {
                 tokio::time::sleep(min - elapsed).await;
             }
-            let _ = row_tx.send(RowBatch {
+            let _ = row_tx.send(AppEvent::Rows(RowBatch {
                 view_id,
                 batch: Ok(Vec::new()),
                 finished: true,
                 is_extend: false,
-            });
+            }));
         };
         tokio::join!(stream_fut, forward_fut);
     });
@@ -4363,7 +4334,7 @@ fn spawn_browse_extend(
     src: std::sync::Arc<dyn crate::source::MusicSource>,
     uri: String,
     view_id: ViewId,
-    row_tx: tokio::sync::mpsc::UnboundedSender<RowBatch>,
+    row_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
 ) {
     const MIN_VISIBLE_MS: u64 = 600;
     tokio::spawn(async move {
@@ -4379,12 +4350,12 @@ fn spawn_browse_extend(
         if elapsed < min {
             tokio::time::sleep(min - elapsed).await;
         }
-        let _ = row_tx.send(RowBatch {
+        let _ = row_tx.send(AppEvent::Rows(RowBatch {
             view_id,
             batch: result,
             finished: true,
             is_extend: true,
-        });
+        }));
     });
 }
 
@@ -4592,8 +4563,7 @@ pub async fn run(
     config: Config,
     mpd_events: ConnectionEvents,
     mut app: App,
-    wake_rx: UnboundedReceiver<()>,
-    row_batch_rx: UnboundedReceiver<RowBatch>,
+    app_event_rx: UnboundedReceiver<AppEvent>,
     spotify_events: UnboundedReceiver<crate::source::spotify::SpotifyEvent>,
     mpris: Option<crate::mpris::MprisHandles>,
 ) -> Result<()> {
@@ -4636,8 +4606,7 @@ pub async fn run(
         &mut terminal,
         &mut app,
         mpd_events,
-        wake_rx,
-        row_batch_rx,
+        app_event_rx,
         spotify_events,
         ipc_rx,
         mpris_event_rx,
@@ -4672,8 +4641,7 @@ async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     mpd_events: ConnectionEvents,
-    mut wake_rx: UnboundedReceiver<()>,
-    mut row_batch_rx: UnboundedReceiver<RowBatch>,
+    mut app_event_rx: UnboundedReceiver<AppEvent>,
     mut spotify_events: UnboundedReceiver<crate::source::spotify::SpotifyEvent>,
     mut ipc_rx: UnboundedReceiver<crate::ipc::IpcRequest>,
     mut mpris_events: Option<UnboundedReceiver<crate::mpris::MprisEvent>>,
@@ -4869,14 +4837,8 @@ async fn run_loop(
             Some(e) = spotify_events.recv() => {
                 app.handle_spotify_event(e).await;
             }
-            _ = wake_rx.recv() => {
-                while wake_rx.try_recv().is_ok() {}
-                app.drain_toast_inbox();
-                app.drain_lyrics_inbox();
-                app.dirty = true;
-            }
-            Some(b) = row_batch_rx.recv() => {
-                app.handle_row_batch(b);
+            Some(ev) = app_event_rx.recv() => {
+                app.handle_app_event(ev).await;
             }
             _ = tick.tick() => app.on_tick().await,
             Some(req) = ipc_rx.recv() => {
