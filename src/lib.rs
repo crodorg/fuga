@@ -169,9 +169,11 @@ pub async fn run_app(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> 
         let mut client = spotify_auth::build_client(
             &config.spotify.client_id,
             config.spotify.redirect_port,
-            token_path,
+            token_path.clone(),
         );
         spotify_auth::interactive_login(&mut client, config.spotify.redirect_port).await?;
+        // The interactive flow just wrote the token cache — restrict it to 0600.
+        spotify_auth::harden_token_file(&token_path);
         return Ok(());
     }
 
@@ -227,6 +229,10 @@ pub async fn run_app(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> 
         let data_dir = config.data_dir();
         std::fs::create_dir_all(&data_dir).ok();
         let token_path = data_dir.join("spotify_tokens.json");
+        // Tighten a token cache carried over from a prior session (or an older
+        // fuga that wrote it world-readable) before use; refresh rewrites keep
+        // the mode.
+        spotify_auth::harden_token_file(&token_path);
         let client = spotify_auth::build_client(
             &config.spotify.client_id,
             config.spotify.redirect_port,

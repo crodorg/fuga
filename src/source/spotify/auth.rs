@@ -47,6 +47,29 @@ pub fn build_client(
     AuthCodePkceSpotify::with_config(creds, oauth, config)
 }
 
+/// Best-effort tighten the token cache to owner-only (0600) on unix. rspotify
+/// writes it with the process umask (often world-readable), and the token
+/// grants full account access. No-op if the file is absent or on non-unix.
+/// `File::create` preserves an existing file's mode on rewrite, so applying
+/// this once — after the file exists — sticks across refreshes.
+pub fn harden_token_file(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            let mut perms = meta.permissions();
+            if perms.mode() & 0o777 != 0o600 {
+                perms.set_mode(0o600);
+                if let Err(e) = std::fs::set_permissions(path, perms) {
+                    tracing::warn!("could not restrict token cache to 0600: {e}");
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 /// Loads cached token if usable. Returns true if loaded from cache.
 pub async fn load_cached_token(client: &AuthCodePkceSpotify) -> Result<bool> {
     match client.read_token_cache(true).await {

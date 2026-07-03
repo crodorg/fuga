@@ -53,6 +53,15 @@ fn bind_socket() -> Option<UnixListener> {
         let _ = std::fs::remove_file(&path); // stale-socket cleanup
         match UnixListener::bind(&path) {
             Ok(listener) => {
+                // Restrict the control socket to the owner so no other local
+                // user can connect and drive playback / trigger a yt-dlp run.
+                // The XDG_RUNTIME_DIR path already sits in a 0700 per-user dir;
+                // the /tmp fallback is world-writable, so tighten the socket.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+                }
                 tracing::info!("ipc listening on {}", path.display());
                 return Some(listener);
             }
