@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-07-03
+
+### Fixed
+
+- **Local, YouTube, and SomaFM queues now advance automatically.** A multi-track
+  album or queue from an MPD-backed source stopped after the first track — only
+  Spotify advanced on its own. fuga now detects when an MPD-backed track ends and
+  moves to the next item in the queue.
+- **Search and the Spotify device picker no longer freeze the interface.** A
+  YouTube search (which shells out to yt-dlp) or opening the device picker used to
+  block all input and redraw until it finished; both now run in the background and
+  the UI stays responsive, with stale search results discarded.
+- **`--config <path>` is now honored.** The flag was accepted but silently
+  ignored; fuga now loads its configuration from the given path.
+
+### Security
+
+- The Spotify token cache and the IPC control socket are now created with
+  owner-only permissions (`0600`), so other local users can't read the cached
+  account token or drive playback through the control socket.
+
 ## [0.4.0] — 2026-07-01
 
 ### Added
