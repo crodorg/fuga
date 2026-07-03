@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 
 use crate::queue::{Queue, QueuedItem, RepeatMode};
 use crate::source::MusicSource;
@@ -50,7 +50,16 @@ impl Dispatcher {
         if let Some(prev_scheme) = self.active_scheme {
             if prev_scheme != item.source_scheme {
                 if let Some(prev) = self.sources.get(prev_scheme) {
-                    prev.stop().await.context("stop prev source")?;
+                    // Best-effort: a dead or unreachable previous source (e.g. an
+                    // MPD that went away) must not block starting the next one.
+                    // Log and continue rather than aborting the play.
+                    if let Err(e) = prev.stop().await {
+                        tracing::warn!(
+                            scheme = prev_scheme,
+                            error = %e,
+                            "stop prev source failed; starting next anyway"
+                        );
+                    }
                 }
             }
         }

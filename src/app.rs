@@ -3524,6 +3524,41 @@ impl App {
             return;
         };
         if let Ok(Some(s)) = src.playback_status().await {
+            // MPD-backed sources (local/radio/somafm/youtube) hand MPD exactly
+            // one track and emit no end-of-track event, so the unified queue
+            // would dead-end at every track boundary. Detect the natural end
+            // here — a Playing→Stopped transition where the last poll left the
+            // position within ~1.5s of the track duration — and advance. The
+            // duration test self-excludes live streams (radio/somafm report no
+            // duration) and a mid-track user stop; Spotify is skipped because it
+            // self-advances via its own EndOfTrack event (advancing here too
+            // would double-skip).
+            let mpd_track_ended = scheme != "spotify"
+                && s.state == PlayState::Stopped
+                && self.playback.as_ref().is_some_and(|p| {
+                    p.state == PlayState::Playing
+                        && p.duration.is_some_and(|d| {
+                            d.saturating_sub(p.elapsed) <= Duration::from_millis(1500)
+                        })
+                });
+            if mpd_track_ended {
+                self.playback = Some(s);
+                self.advance_queue().await;
+                // Reflect the freshly-started track immediately so the UI does
+                // not show a stale "stopped" until the next poll (or freeze on a
+                // stale "playing" frame when the queue has run out).
+                if let Some(src2) = self
+                    .dispatcher
+                    .active_scheme()
+                    .and_then(|sc| self.dispatcher.get(sc).cloned())
+                {
+                    if let Ok(Some(s2)) = src2.playback_status().await {
+                        self.playback = Some(s2);
+                    }
+                }
+                self.dirty = true;
+                return;
+            }
             // State/volume changes always redraw. Elapsed is polled at
             // sub-second precision but only ever *shown* at coarse quanta — the
             // mm:ss label is whole-second, the progress bar steps in eighths of
