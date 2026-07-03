@@ -188,6 +188,15 @@ pub enum AppEvent {
     ViewPoll(String, String),
     /// A streaming-browse pagination page.
     Rows(RowBatch),
+    /// Results from a spawned `run_search`. Applied only if `generation` still
+    /// matches (a newer query supersedes an older in-flight one).
+    SearchResults {
+        generation: u64,
+        groups: Vec<SearchGroup>,
+    },
+    /// Device list from a spawned `open_device_picker` fetch (`Ok`) or a
+    /// pre-formatted error (`Err`). Applied only while the modal is still open.
+    Devices(Result<Vec<crate::types::DeviceEntry>, String>),
     /// A bare "state changed, redraw" poke with no payload (e.g. an art
     /// fetch completing).
     Wake,
@@ -348,6 +357,9 @@ pub struct App {
     pub search_results: Vec<SearchGroup>,
     pub search_cursor: usize,
     pub search_top: usize,
+    /// Bumped on each `run_search` kick so a stale in-flight query's results
+    /// (delivered via `AppEvent::SearchResults`) are dropped.
+    pub search_generation: u64,
 
     pub command_buffer: String,
     pub command_input_focused: bool,
@@ -624,6 +636,7 @@ impl App {
             search_results: Vec::new(),
             search_cursor: 0,
             search_top: 0,
+            search_generation: 0,
             command_buffer: String::new(),
             command_input_focused: false,
             window_focused: true,
@@ -1297,7 +1310,7 @@ impl App {
                 self.dirty = true;
             }
             Action::ToggleLike => self.toggle_like().await,
-            Action::OpenDevicePicker => self.open_device_picker().await,
+            Action::OpenDevicePicker => self.open_device_picker(),
             Action::TransferToSelectedDevice => self.transfer_to_selected_device().await,
             Action::SeekToPermille(p) => self.seek_to_permille(p).await,
             Action::SeekRelative(secs) => self.seek_relative(secs).await,
@@ -1410,7 +1423,10 @@ impl App {
     /// Open the Spotify device-picker modal and synchronously fetch the list.
     /// The fetch typically takes <300ms; the brief block keeps the code simple
     /// versus a deferred-results channel.
-    async fn open_device_picker(&mut self) {
+    /// Open the device modal immediately (showing its loading state) and fetch
+    /// the device list on a background task so a slow/rate-limited Web-API call
+    /// never freezes the loop. The list arrives as `AppEvent::Devices`.
+    fn open_device_picker(&mut self) {
         let Some(spotify) = self.dispatcher.get("spotify").cloned() else {
             self.set_status("device picker: Spotify source not enabled");
             return;
@@ -1420,20 +1436,11 @@ impl App {
         self.devices.clear();
         self.device_modal_sel = 0;
         self.dirty = true;
-        match spotify.list_devices().await {
-            Ok(devs) => {
-                if let Some(idx) = devs.iter().position(|d| d.is_active) {
-                    self.device_modal_sel = idx;
-                }
-                self.devices = devs;
-            }
-            Err(e) => {
-                self.set_status(format!("device list: {e}"));
-                self.device_modal_open = false;
-            }
-        }
-        self.device_modal_loading = false;
-        self.dirty = true;
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let res = spotify.list_devices().await.map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::Devices(res));
+        });
     }
 
     /// Relative seek by `secs` (negative = back). Clamped to [0, duration].
@@ -1979,7 +1986,8 @@ impl App {
     async fn activate_search(&mut self) -> Result<()> {
         if self.search_input_focused {
             // Enter inside the input box runs the query.
-            return self.run_search().await;
+            self.run_search();
+            return Ok(());
         }
         // Otherwise: cursor sits on a flattened row — find which group/item.
         let mut idx = self.search_cursor;
@@ -2070,16 +2078,19 @@ impl App {
         Ok(())
     }
 
-    /// Fan out the current query across every registered source in parallel.
-    /// Empty query clears results.
-    pub async fn run_search(&mut self) -> Result<()> {
+    /// Fan out the current query across the active source on a background task
+    /// so a slow source (a yt-dlp search can take up to 20s) never freezes the
+    /// event loop. Results arrive as `AppEvent::SearchResults`, guarded by a
+    /// generation so a superseded query is dropped. Empty query clears results.
+    pub fn run_search(&mut self) {
         let q = self.search_query.trim().to_string();
+        // Enter submits the query — unfocus the input box either way.
+        self.search_input_focused = false;
         if q.is_empty() {
             self.search_results.clear();
             self.search_cursor = 0;
-            self.search_input_focused = false;
             self.dirty = true;
-            return Ok(());
+            return;
         }
         // Mode-driven: search the active source only. `t` cycles which.
         let active_scheme = self.active_source.scheme();
@@ -2092,34 +2103,27 @@ impl App {
             .iter()
             .filter_map(|s| self.dispatcher.get(s).map(|src| (*s, src.clone())))
             .collect();
+        self.search_generation = self.search_generation.wrapping_add(1);
+        let generation = self.search_generation;
         self.set_status(format!("searching: {q}"));
         tracing::info!("run_search: query={q:?} sources={}", sources.len());
-
-        let futs = sources.into_iter().map(|(scheme, src)| {
-            let q = q.clone();
-            async move {
-                let res = src.search(&q).await;
-                (scheme, res)
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let futs = sources.into_iter().map(|(scheme, src)| {
+                let q = q.clone();
+                async move { (scheme, src.search(&q).await) }
+            });
+            let outcomes = futures::future::join_all(futs).await;
+            let mut groups: Vec<SearchGroup> = Vec::new();
+            for (scheme, res) in outcomes {
+                match res {
+                    Ok(items) if !items.is_empty() => groups.push(SearchGroup { scheme, items }),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("search {scheme}: {e}"),
+                }
             }
+            let _ = tx.send(AppEvent::SearchResults { generation, groups });
         });
-        let outcomes = futures::future::join_all(futs).await;
-
-        let mut groups: Vec<SearchGroup> = Vec::new();
-        for (scheme, res) in outcomes {
-            match res {
-                Ok(items) if !items.is_empty() => groups.push(SearchGroup { scheme, items }),
-                Ok(_) => {}
-                Err(e) => tracing::warn!("search {scheme}: {e}"),
-            }
-        }
-        let total: usize = groups.iter().map(|g| g.items.len()).sum();
-        self.search_results = groups;
-        self.search_cursor = 0;
-        self.search_top = 0;
-        self.search_input_focused = false;
-        self.set_status(format!("results: {total}"));
-        self.dirty = true;
-        Ok(())
     }
 
     async fn activate_browse(&mut self) -> Result<()> {
@@ -3010,6 +3014,39 @@ impl App {
             }
             AppEvent::ViewPoll(path, snap) => self.handle_view_poll(path, snap).await,
             AppEvent::Rows(batch) => self.handle_row_batch(batch),
+            AppEvent::SearchResults { generation, groups } => {
+                // Drop results from a superseded query (user searched again or
+                // typed on while this one was in flight).
+                if generation != self.search_generation {
+                    return;
+                }
+                let total: usize = groups.iter().map(|g| g.items.len()).sum();
+                self.search_results = groups;
+                self.search_cursor = 0;
+                self.search_top = 0;
+                self.set_status(format!("results: {total}"));
+                self.dirty = true;
+            }
+            AppEvent::Devices(res) => {
+                // Ignore a late device list if the user already closed the modal.
+                if !self.device_modal_open {
+                    return;
+                }
+                match res {
+                    Ok(devs) => {
+                        if let Some(idx) = devs.iter().position(|d| d.is_active) {
+                            self.device_modal_sel = idx;
+                        }
+                        self.devices = devs;
+                    }
+                    Err(e) => {
+                        self.set_status(format!("device list: {e}"));
+                        self.device_modal_open = false;
+                    }
+                }
+                self.device_modal_loading = false;
+                self.dirty = true;
+            }
             AppEvent::Wake => self.dirty = true,
         }
     }
