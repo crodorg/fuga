@@ -60,7 +60,26 @@ impl Term {
     /// Probe the terminal. Must be called after entering the alt screen but before the event
     /// reader starts.
     pub fn probe(config_mode: ThumbMode) -> Result<Self> {
-        let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+        let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| {
+            // Query timed out: ratatui-image abandons its stdin reader thread,
+            // which stays parked in a blocking read holding the tty's reader
+            // lock — starving every later read on the fd (our selfprobe,
+            // crossterm's event loop) and clobbering termios whenever it
+            // finally wakes. Feed it the DSR terminator it wants: a bare
+            // (un-wrapped) status query that tmux's own vt answers directly
+            // into the pane, no outer terminal involved. The thread eats the
+            // reply, exits its loop, and restores termios before we touch the
+            // tty again. Happens only in reply-starved panes (detached
+            // session, non-active tmux pane); an answered query never hits
+            // this path.
+            #[cfg(unix)]
+            {
+                let q: &[u8] = b"\x1b[5n";
+                let _ = unsafe { libc::write(libc::STDOUT_FILENO, q.as_ptr().cast(), q.len()) };
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+            Picker::halfblocks()
+        });
         // ratatui-image's probe sets this pane's allow-passthrough to "on"
         // (visible-only), so kitty re-transmits are dropped while our tmux
         // window is hidden and art comes back broken after a window switch.
@@ -142,51 +161,85 @@ const KITTY_OK: &[u8] = b"\x1b_Gi=31;OK\x1b\\";
 /// a non-answering terminal costs one 500 ms timeout.
 #[cfg(unix)]
 fn kitty_selfprobe() -> bool {
-    use std::io::Write;
+    kitty_selfprobe_fd(libc::STDIN_FILENO, libc::STDOUT_FILENO)
+}
+
+/// Core of [`kitty_selfprobe`], parameterized over the tty fds so tests can
+/// aim it at a pty. Reads with `O_NONBLOCK` + `poll` rather than VMIN/VTIME:
+/// the line discipline serializes tty readers, so if another thread is parked
+/// in a blocking read on the same fd (ratatui-image's abandoned query-reader
+/// thread, see `Term::probe`), a plain read would queue behind its lock
+/// indefinitely — VTIME never even starts. A nonblocking read returns EAGAIN
+/// instead of queueing, and poll's timeout bounds the wait, so the 500 ms
+/// deadline holds no matter what else has the tty.
+#[cfg(unix)]
+fn kitty_selfprobe_fd(read_fd: libc::c_int, write_fd: libc::c_int) -> bool {
     use std::time::{Duration, Instant};
 
-    let fd = libc::STDIN_FILENO;
-
-    // Save TTY state, switch to raw with a 100 ms read timeout (VMIN=0/VTIME=1)
-    // so reads return promptly and never block past the deadline.
+    // Save TTY state; drop canonical buffering + echo so the reply arrives
+    // raw and unechoed.
     let mut orig: libc::termios = unsafe { std::mem::zeroed() };
-    if unsafe { libc::tcgetattr(fd, &mut orig) } != 0 {
+    if unsafe { libc::tcgetattr(read_fd, &mut orig) } != 0 {
         return false;
     }
     let mut raw = orig;
     raw.c_lflag &= !(libc::ICANON | libc::ECHO);
-    raw.c_cc[libc::VMIN] = 0;
-    raw.c_cc[libc::VTIME] = 1;
-    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
+    if unsafe { libc::tcsetattr(read_fd, libc::TCSANOW, &raw) } != 0 {
         return false;
+    }
+    let orig_flags = unsafe { libc::fcntl(read_fd, libc::F_GETFL) };
+    if orig_flags != -1 {
+        unsafe { libc::fcntl(read_fd, libc::F_SETFL, orig_flags | libc::O_NONBLOCK) };
     }
 
     // Kitty query alone in one passthrough wrapper. No DSR terminator: we read
     // the whole window so a racing client's DSR can't cut us off early.
     {
-        let mut out = std::io::stdout().lock();
-        let _ =
-            out.write_all(b"\x1bPtmux;\x1b\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\x1b\\\x1b\\");
-        let _ = out.flush();
+        let q: &[u8] = b"\x1bPtmux;\x1b\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\x1b\\\x1b\\";
+        let _ = unsafe { libc::write(write_fd, q.as_ptr().cast(), q.len()) };
     }
 
     let mut buf = Vec::with_capacity(256);
     let mut chunk = [0u8; 256];
     let deadline = Instant::now() + Duration::from_millis(500);
     let found = loop {
-        let n = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break false;
+        }
+        let mut pfd = libc::pollfd {
+            fd: read_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let rc = unsafe { libc::poll(&mut pfd, 1, remaining.as_millis() as libc::c_int) };
+        if rc < 0 {
+            break false;
+        }
+        if rc == 0 {
+            continue; // poll timeout → deadline check exits next iteration
+        }
+        let n = unsafe { libc::read(read_fd, chunk.as_mut_ptr().cast(), chunk.len()) };
         if n > 0 {
             buf.extend_from_slice(&chunk[..n as usize]);
             if buf.windows(KITTY_OK.len()).any(|w| w == KITTY_OK) {
                 break true;
             }
-        }
-        if Instant::now() >= deadline {
-            break false;
+        } else if n < 0 {
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            // EAGAIN: nothing buffered, or a competing reader consumed it.
+            if errno != libc::EAGAIN && errno != libc::EWOULDBLOCK {
+                break false;
+            }
+        } else {
+            break false; // EOF
         }
     };
 
-    unsafe { libc::tcsetattr(fd, libc::TCSANOW, &orig) };
+    if orig_flags != -1 {
+        unsafe { libc::fcntl(read_fd, libc::F_SETFL, orig_flags) };
+    }
+    unsafe { libc::tcsetattr(read_fd, libc::TCSANOW, &orig) };
     found
 }
 
@@ -260,6 +313,58 @@ mod tests {
         assert!(!super::kitty_env_present(
             |n| n == "TERM_PROGRAM" || n == "TERM"
         ));
+    }
+
+    /// Regression: the selfprobe must honor its deadline even when another
+    /// thread is parked in a blocking read on the same tty. ratatui-image's
+    /// timed-out query leaves exactly such an orphan reader behind, and the
+    /// line discipline serializes tty readers — the old VMIN=0/VTIME=1 loop
+    /// queued behind the orphan's lock forever (main thread wedged in
+    /// n_tty_read, fuga never drew a frame).
+    #[cfg(unix)]
+    #[test]
+    fn selfprobe_returns_within_deadline_despite_blocked_reader() {
+        use std::time::{Duration, Instant};
+
+        let (mut master, mut slave) = (0 as libc::c_int, 0 as libc::c_int);
+        let ok = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(ok, 0, "openpty failed");
+
+        // Orphan: a blocking read on the slave that never completes (nothing
+        // writes to the master), holding the tty reader lock — the state
+        // ratatui-image's abandoned query thread leaves behind.
+        let orphan_fd = slave;
+        std::thread::spawn(move || {
+            let mut b = [0u8; 64];
+            unsafe { libc::read(orphan_fd, b.as_mut_ptr().cast(), b.len()) };
+        });
+        std::thread::sleep(Duration::from_millis(100)); // let it enter the read
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let probe_fd = slave;
+        let t0 = Instant::now();
+        std::thread::spawn(move || {
+            let _ = tx.send(super::kitty_selfprobe_fd(probe_fd, probe_fd));
+        });
+        match rx.recv_timeout(Duration::from_secs(3)) {
+            Ok(found) => {
+                assert!(!found, "no terminal answered; probe must report false");
+                assert!(
+                    t0.elapsed() < Duration::from_millis(1500),
+                    "probe took {:?}, deadline is 500ms",
+                    t0.elapsed()
+                );
+            }
+            Err(_) => panic!("kitty_selfprobe blocked past 3s behind the orphan reader"),
+        }
     }
 
     #[test]
