@@ -103,9 +103,13 @@ pub fn render(app: &mut App, f: &mut Frame<'_>) {
     };
 
     // `body_area` (for the toast) + `toast_art` (art inset, standard mode
-    // only — nothing overlaps the body in sidebar mode) fall out of whichever
-    // branch runs.
-    let (body_area, toast_art): (Rect, Option<(u16, u16)>) = if let Some(col_w) = sidebar_w {
+    // only — nothing overlaps the body in sidebar mode) + `popup_area` (where
+    // popups/modals center) fall out of whichever branch runs. In sidebar
+    // mode popups are confined to the left list rectangle: the Kitty
+    // placeholder protocol packs each image row into the row's first cell, so
+    // a popup touching even one column of the art column blanks entire image
+    // rows.
+    let (body_area, toast_art, popup_area) = if let Some(col_w) = sidebar_w {
         // tabs (full width) / lower region
         let rows = Layout::default()
             .direction(Direction::Vertical)
@@ -139,7 +143,7 @@ pub fn render(app: &mut App, f: &mut Frame<'_>) {
         render_bottom_bar(app, f, status_rect);
         app.art_panel_rect = None;
         render_sidebar_art(app, f, art_rect);
-        (body_left, None)
+        (body_left, None, body_left)
     } else {
         // Standard 3-row stack: tabs / body / bottom bar.
         let layout = Layout::default()
@@ -184,29 +188,29 @@ pub fn render(app: &mut App, f: &mut Frame<'_>) {
         if let Some((art_w, art_h)) = art_dims {
             render_art_panel(app, f, area, art_w, art_h, bottom_h);
         }
-        (body_area, art_dims)
+        (body_area, art_dims, area)
     };
 
     if app.status.is_some() {
         render_status_toast(app, f, body_area, toast_art);
     }
     if app.help_visible {
-        render_help(app, f, area);
+        render_help(app, f, popup_area);
     }
     if app.device_modal_open {
-        render_device_modal(app, f, area);
+        render_device_modal(app, f, popup_area);
     }
     if app.sort_modal_open {
-        render_sort_modal(app, f, area);
+        render_sort_modal(app, f, popup_area);
     }
     if app.command_input_focused {
-        render_command_bar(app, f, area);
+        render_command_bar(app, f, popup_area);
     }
     if app.action_menu_open {
-        render_action_menu(app, f, area);
+        render_action_menu(app, f, popup_area);
     }
     if app.playlist_picker.is_some() {
-        render_playlist_picker(app, f, area);
+        render_playlist_picker(app, f, popup_area);
     }
     // Expanded-art overlay sits on top of everything. Rendered last so it
     // covers tab bar, body, bottom bar.
@@ -2001,14 +2005,16 @@ fn render_help(app: &App, f: &mut Frame<'_>, area: Rect) {
     let popup_h = (total_lines + 2)
         .min((area.height as f32 * 0.8) as u16)
         .max(6);
+    // Lower bound before the area clamp: the popup must never leave `area`
+    // (in sidebar mode overflowing right would blank art rows — see render).
     let popup_w: u16 = lines
         .iter()
         .map(|l| l.width() as u16)
         .max()
         .unwrap_or(40)
         .saturating_add(4)
-        .min(area.width.saturating_sub(2))
-        .max(40);
+        .max(40)
+        .min(area.width.saturating_sub(2));
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(popup_w)) / 2,
         y: area.y + (area.height.saturating_sub(popup_h)) / 2,
@@ -2058,8 +2064,8 @@ fn render_sort_modal(app: &App, f: &mut Frame<'_>, area: Rect) {
         .max()
         .unwrap_or(40)
         .saturating_add(4)
-        .min(area.width.saturating_sub(2))
-        .max(40);
+        .max(40)
+        .min(area.width.saturating_sub(2));
     let popup_h = (lines.len() as u16 + 2)
         .min(area.height.saturating_sub(2))
         .max(4);
@@ -2123,8 +2129,8 @@ fn render_device_modal(app: &App, f: &mut Frame<'_>, area: Rect) {
         .max()
         .unwrap_or(40)
         .saturating_add(4)
-        .min(area.width.saturating_sub(2))
-        .max(40);
+        .max(40)
+        .min(area.width.saturating_sub(2));
     let popup_h = (lines.len() as u16 + 2)
         .min(area.height.saturating_sub(2))
         .max(4);
