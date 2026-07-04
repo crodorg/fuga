@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust 2024](https://img.shields.io/badge/edition-2024-dea584.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey.svg)](#)
-[![Status](https://img.shields.io/badge/status-v0.4.2-orange.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-v0.4.3-orange.svg)](CHANGELOG.md)
 
 Terminal-native music library aggregator. One TUI, one queue, many sources:
 local files (via MPD), internet radio, SomaFM, Spotify, YouTube. Inline
@@ -290,6 +290,11 @@ parallel; results are grouped by source. `j`/`k` to navigate, Enter to play.
   with: `printf '\e_Gi=31337,s=1,v=1,a=q,t=d,f=24;AAAA\e\\'`.
 - **Under tmux** — set `set -g allow-passthrough on` in `tmux.conf` and use
   tmux ≥ 3.4. Otherwise the graphics protocol is silently dropped.
+- **Art starts as halfblocks when fuga launches in a background tmux pane** —
+  fuga only probes the terminal while its pane has focus (probe replies would
+  otherwise land in the focused pane as stray keystrokes). Focus the pane once
+  and the art upgrades to Kitty graphics automatically. For launches that
+  never gain focus (scripts, detached sessions), set `FUGA_ASSUME_KITTY=1`.
 - **Spotify auth fails** — delete `~/.local/share/fuga/spotify_tokens.json`
   and re-run `fuga --spotify-auth`. Confirm the redirect URI in your Spotify
   developer dashboard matches `redirect_port` in your config.

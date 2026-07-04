@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] — 2026-07-04
+
+### Fixed
+
+- **Starting fuga in an unfocused tmux pane no longer types stray characters
+  into the focused pane.** The startup capability probes always queried the
+  terminal, but tmux delivers the replies to whichever pane is currently
+  active — where they arrive as keystrokes (`Gi=31;OK…` at your prompt). fuga
+  now probes only when its own pane has focus; otherwise it starts without
+  sending any queries, recognizing Kitty-capable terminals by their
+  environment markers, and completes the probe the first time its pane gains
+  focus — upgrading the art in place.
+- **Fixed a startup hang when launching in a tmux pane that can't receive
+  query replies** (a detached session, or a pane that isn't active). The
+  capability query wedged reading the terminal and fuga never drew a frame;
+  it now boots normally.
+- **Popups stay inside the list box in sidebar art mode.** The Kitty
+  placeholder protocol packs each image row's escape sequence into the row's
+  first cell, so a centered popup that touched the art column blanked whole
+  image rows. Help, menus, modals, and the command bar now center over the
+  list rectangle instead.
+
+### Added
+
+- **`FUGA_ASSUME_KITTY`** environment override — asserts Kitty graphics
+  capability for launch contexts where no probe can work, such as scripted
+  launches into panes that never gain focus.
+
 ## [0.4.2] — 2026-07-03
 
 ### Fixed
