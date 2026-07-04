@@ -54,12 +54,26 @@ pub struct Term {
     pub picker: Picker,
     pub mode: ThumbMode,
     pub kitty_capable: bool,
+    /// Startup skipped the escape probes (unfocused tmux pane, see `probe`)
+    /// and env markers didn't settle kitty: the run loop should probe on the
+    /// first FocusGained, when tmux routes replies back to this pane.
+    pub deferred_probe: bool,
 }
 
 impl Term {
     /// Probe the terminal. Must be called after entering the alt screen but before the event
     /// reader starts.
     pub fn probe(config_mode: ThumbMode) -> Result<Self> {
+        // A pane nobody is looking at can't hear escape-query replies: tmux
+        // routes the outer terminal's answers to each attached client's
+        // *active* pane, which strips the escape framing and takes the
+        // printable remainder as keystrokes — probing from an unfocused pane
+        // types junk into whatever pane the user has focused, in any window.
+        // Detached sessions starve the same way. So: no escape queries at all
+        // unless we're the focused pane of an attached client.
+        if std::env::var_os("TMUX").is_some() && !pane_focused() {
+            return Ok(Self::probe_unfocused(config_mode));
+        }
         let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| {
             // Query timed out: ratatui-image abandons its stdin reader thread,
             // which stays parked in a blocking read holding the tty's reader
@@ -93,12 +107,7 @@ impl Term {
         // delivers FocusGained to the pane when focus-events is on — and it
         // defaults to off. So enable it here too. See decisions.md 2026-06-26.
         if std::env::var_os("TMUX").is_some() {
-            let _ = std::process::Command::new("tmux")
-                .args(["set", "-p", "allow-passthrough", "all"])
-                .output();
-            let _ = std::process::Command::new("tmux")
-                .args(["set", "-g", "focus-events", "on"])
-                .output();
+            tmux_enable_passthrough_and_focus();
         }
         let mut kitty_capable = matches!(picker.protocol_type(), ProtocolType::Kitty);
 
@@ -131,7 +140,38 @@ impl Term {
             picker,
             mode,
             kitty_capable,
+            deferred_probe: false,
         })
+    }
+
+    /// Escape-free probe for panes that can't hear a reply (unfocused pane,
+    /// hidden window, detached session). Capability comes from env markers;
+    /// markerless kitty terminals (st) start halfblocks with `deferred_probe`
+    /// set so the run loop re-probes on the first FocusGained.
+    fn probe_unfocused(config_mode: ThumbMode) -> Self {
+        // halfblocks() does no terminal I/O — env checks plus a tmux
+        // `allow-passthrough on` subprocess — and sets its internal is_tmux
+        // flag so kitty transmits stay passthrough-wrapped. Its (10,20) font
+        // size matches the query default and is exact for st and ghostty.
+        let picker = Picker::halfblocks();
+        tmux_enable_passthrough_and_focus();
+        let kitty_capable = kitty_terminal_env();
+        let mut term = Self {
+            picker,
+            mode: config_mode,
+            kitty_capable,
+            deferred_probe: !kitty_capable && config_mode == ThumbMode::Kitty,
+        };
+        // Reuse the mode→protocol mapping (kitty falls back to halfblocks
+        // when not capable); halfblocks()'s default protocol is not
+        // query-grounded, so overwrite it.
+        term.apply_mode(config_mode);
+        tracing::debug!(
+            kitty = kitty_capable,
+            deferred = term.deferred_probe,
+            "escape probes skipped (unfocused tmux pane); capability from env markers"
+        );
+        term
     }
 
     pub fn apply_mode(&mut self, mode: ThumbMode) {
@@ -152,6 +192,98 @@ impl Term {
 /// The exact kitty-graphics query reply ratatui-image looks for (`i=31;OK`).
 #[cfg(unix)]
 const KITTY_OK: &[u8] = b"\x1b_Gi=31;OK\x1b\\";
+
+/// The kitty graphics `a=q` query alone in one tmux passthrough wrapper. No
+/// DSR terminator: readers scan the whole response window so a racing
+/// client's DSR can't cut them off early (see decisions.md 2026-06-19).
+/// Shared by `kitty_selfprobe` (startup, reads the tty) and the deferred
+/// probe (post-startup, reply arrives as key events — `KittyReplyScanner`).
+pub const KITTY_QUERY_TMUX: &[u8] =
+    b"\x1bPtmux;\x1b\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\x1b\\\x1b\\";
+
+/// True when this tmux pane is the one the attached client is looking at:
+/// `display-message` output `pane_active:window_active:session_attached` is
+/// exactly `1:1:N` with N >= 1. Pure so it's unit-testable without tmux.
+fn parse_focus_output(s: &str) -> bool {
+    let mut it = s.trim().split(':');
+    let pane = it.next() == Some("1");
+    let window = it.next() == Some("1");
+    let attached = it
+        .next()
+        .and_then(|n| n.parse::<u32>().ok())
+        .is_some_and(|n| n >= 1);
+    pane && window && attached && it.next().is_none()
+}
+
+/// Whether this pane is the focused pane of an attached tmux client — the
+/// only launch context where an escape-query reply can reach us. Any failure
+/// to determine (no TMUX_PANE, tmux error, garbage output) reads as
+/// unfocused: skipping the probe costs halfblock art at worst, while probing
+/// blind types junk into the user's focused pane.
+fn pane_focused() -> bool {
+    let Some(pane) = std::env::var_os("TMUX_PANE") else {
+        return false;
+    };
+    std::process::Command::new("tmux")
+        .arg("display-message")
+        .arg("-p")
+        .arg("-t")
+        .arg(&pane)
+        .arg("#{pane_active}:#{window_active}:#{session_attached}")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| parse_focus_output(&String::from_utf8_lossy(&o.stdout)))
+}
+
+/// The two tmux options every fuga-in-tmux startup needs: allow-passthrough
+/// upgraded to "all" (ratatui-image's own detection sets visible-only "on",
+/// under which kitty re-transmits from a hidden window are dropped) and
+/// focus-events on (off by default; the art re-transmit on focus-return and
+/// the deferred probe both need FocusGained delivered). See decisions.md
+/// 2026-06-26.
+fn tmux_enable_passthrough_and_focus() {
+    let _ = std::process::Command::new("tmux")
+        .args(["set", "-p", "allow-passthrough", "all"])
+        .output();
+    let _ = std::process::Command::new("tmux")
+        .args(["set", "-g", "focus-events", "on"])
+        .output();
+}
+
+/// Scans key-event characters for the kitty `i=31;OK` reply during the
+/// deferred probe's capture window: once the event loop owns stdin, a
+/// terminal reply can't be read off the tty (the line discipline serializes
+/// readers — see `kitty_selfprobe_fd`) and instead surfaces through
+/// crossterm as ordinary key events. Only characters that can appear in the
+/// reply frame are claimed; everything else stays user input.
+#[derive(Default)]
+pub struct KittyReplyScanner {
+    seen: String,
+}
+
+impl KittyReplyScanner {
+    /// Text form of the `KITTY_OK` reply; the `31` is the image id from
+    /// `KITTY_QUERY_TMUX` — the three constants must move in lockstep.
+    const NEEDLE: &'static str = "i=31;OK";
+    /// Every char of the passthrough-stripped reply frame.
+    const FRAME_CHARS: &'static str = "Gi=31;OK_\\";
+
+    /// Feed one key char. True = reply-frame char, swallow it (then check
+    /// [`Self::matched`]); false = unrelated user input, pass it through.
+    pub fn feed(&mut self, c: char) -> bool {
+        if Self::FRAME_CHARS.contains(c) {
+            self.seen.push(c);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn matched(&self) -> bool {
+        self.seen.contains(Self::NEEDLE)
+    }
+}
 
 /// Send a Kitty graphics `a=q` query in its own tmux passthrough wrapper and
 /// read the whole response window (not just up to the first DSR) for the
@@ -195,7 +327,7 @@ fn kitty_selfprobe_fd(read_fd: libc::c_int, write_fd: libc::c_int) -> bool {
     // Kitty query alone in one passthrough wrapper. No DSR terminator: we read
     // the whole window so a racing client's DSR can't cut us off early.
     {
-        let q: &[u8] = b"\x1bPtmux;\x1b\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\x1b\\\x1b\\";
+        let q = KITTY_QUERY_TMUX;
         let _ = unsafe { libc::write(write_fd, q.as_ptr().cast(), q.len()) };
     }
 
@@ -373,6 +505,42 @@ mod tests {
             }
             Err(_) => panic!("kitty_selfprobe blocked past 3s behind the orphan reader"),
         }
+    }
+
+    #[test]
+    fn parse_focus_output_accepts_only_focused_pane_of_attached_session() {
+        assert!(super::parse_focus_output("1:1:1"));
+        assert!(super::parse_focus_output("1:1:2\n")); // two clients, newline from -p
+        assert!(!super::parse_focus_output("0:1:1")); // pane not active
+        assert!(!super::parse_focus_output("1:0:1")); // window hidden
+        assert!(!super::parse_focus_output("1:1:0")); // session detached
+        assert!(!super::parse_focus_output(""));
+        assert!(!super::parse_focus_output("junk"));
+        assert!(!super::parse_focus_output("1:1"));
+        assert!(!super::parse_focus_output("1:1:1:1"));
+    }
+
+    #[test]
+    fn reply_scanner_matches_kitty_ok_and_passes_user_keys() {
+        let mut s = super::KittyReplyScanner::default();
+        for c in "Gi=3".chars() {
+            assert!(s.feed(c), "frame char {c:?} must be swallowed");
+        }
+        // A user keystroke mid-window passes through and doesn't break the match.
+        assert!(!s.feed('j'));
+        assert!(!s.matched());
+        for c in "1;OK".chars() {
+            assert!(s.feed(c));
+        }
+        assert!(s.matched());
+    }
+
+    #[test]
+    fn reply_scanner_swallows_frame_wrappers_without_matching() {
+        let mut s = super::KittyReplyScanner::default();
+        assert!(s.feed('_')); // Alt+_ from the APC intro
+        assert!(s.feed('\\')); // Alt+\ from the ST terminator
+        assert!(!s.matched());
     }
 
     #[test]

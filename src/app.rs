@@ -369,6 +369,10 @@ pub struct App {
     /// case). Defaults true so terminals that don't report focus keep polling.
     pub window_focused: bool,
 
+    /// Open reply-capture window for the deferred probe: scanner + deadline.
+    /// While set, reply-frame chars are diverted from the keymap.
+    probe_capture: Option<(crate::term_probe::KittyReplyScanner, Instant)>,
+
     pub theme: Theme,
     /// User-selected palette before per-source accent swap. `set_mode` rebuilds
     /// `theme = base_theme.with_source_accent(mode)` each toggle so the source
@@ -603,6 +607,7 @@ impl App {
             dispatcher,
             local,
             art_cache,
+            probe_capture: None,
             term,
             protocols: HashMap::new(),
             fetching: HashSet::new(),
@@ -3339,6 +3344,66 @@ impl App {
         self.expanded_art_protocol = None;
     }
 
+    /// One-shot deferred capability probe for launches that started in an
+    /// unfocused tmux pane (see `Term::probe`): now that this pane has focus,
+    /// tmux routes terminal replies back here — but crossterm's event reader
+    /// owns stdin, so instead of reading the tty we send the query and let
+    /// the reply arrive as key events, matched by `feed_probe_capture` during
+    /// a short capture window. Called from run_loop on FocusGained (tmux only).
+    fn start_deferred_probe(&mut self) {
+        if !self.term.deferred_probe || self.term.kitty_capable {
+            return;
+        }
+        self.term.deferred_probe = false;
+        use std::io::Write;
+        let mut out = std::io::stdout();
+        if out
+            .write_all(crate::term_probe::KITTY_QUERY_TMUX)
+            .and_then(|()| out.flush())
+            .is_ok()
+        {
+            self.probe_capture = Some((
+                crate::term_probe::KittyReplyScanner::default(),
+                Instant::now() + Duration::from_millis(600),
+            ));
+            tracing::debug!("deferred kitty probe sent; capture window open");
+        }
+    }
+
+    /// Feed a key event to the open deferred-probe capture window, if any.
+    /// True = the event is part of the probe reply and must not reach the
+    /// keymap. On a full `i=31;OK` match, upgrades to kitty and re-renders —
+    /// what startup detection would have done had it been able to probe.
+    fn feed_probe_capture(&mut self, k: &crossterm::event::KeyEvent) -> bool {
+        use crossterm::event::KeyCode;
+        let Some((scanner, deadline)) = self.probe_capture.as_mut() else {
+            return false;
+        };
+        if Instant::now() > *deadline {
+            self.probe_capture = None;
+            return false;
+        }
+        let KeyCode::Char(c) = k.code else {
+            return false;
+        };
+        if !scanner.feed(c) {
+            return false;
+        }
+        if scanner.matched() {
+            self.probe_capture = None;
+            self.term.kitty_capable = true;
+            // Upgrade only from the startup halfblocks fallback — a mode the
+            // user has since cycled to stays put.
+            if self.term.mode == crate::term_probe::ThumbMode::Halfblocks {
+                self.term.apply_mode(crate::term_probe::ThumbMode::Kitty);
+                self.invalidate_image_protocols();
+                self.dirty = true;
+            }
+            tracing::debug!("deferred kitty probe matched; upgraded to kitty");
+        }
+        true
+    }
+
     /// Open the expanded-art overlay on the row under the cursor. Picks
     /// the largest art URL the row exposes (`art_uri_full` first, else
     /// `art_uri`). Spawns a fetch so Spotify's high-res CDN URL lands in
@@ -4751,6 +4816,13 @@ async fn run_loop(
                     if k.kind == KeyEventKind::Repeat {
                         continue;
                     }
+                    // Deferred-probe reply capture: the kitty answer arrives
+                    // as key events (crossterm owns stdin — see
+                    // start_deferred_probe). Divert reply-frame chars from
+                    // the keymap; everything else falls through.
+                    if app.feed_probe_capture(&k) {
+                        continue;
+                    }
                     let action = app.key_to_action(k);
                     // Add-to-playlist picker: j/k navigate, Enter commits, Esc cancels.
                     if app.playlist_picker.is_some() {
@@ -4852,6 +4924,9 @@ async fn run_loop(
                     app.window_focused = true;
                     if std::env::var_os("TMUX").is_some() {
                         app.invalidate_image_protocols();
+                        // First focus after a probe-skipped startup: the pane
+                        // can finally hear a reply — probe now.
+                        app.start_deferred_probe();
                     }
                     app.dirty = true;
                 }

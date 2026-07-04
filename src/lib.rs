@@ -303,6 +303,7 @@ pub async fn run_app(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> 
             picker: ratatui_image::picker::Picker::halfblocks(),
             mode: ThumbMode::Off,
             kitty_capable: false,
+            deferred_probe: false,
         });
 
     let thumb_cells = config.ui.thumb_cells;
