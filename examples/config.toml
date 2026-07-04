@@ -220,13 +220,13 @@ remove_from_queue = "D"
 expand_art        = "v"
 open_action_menu  = "m"
 toggle_pin        = "P"
-download_hovered  = "Y"
+download_hovered  = "d"
 
 # Sources / UI
 cycle_source      = "t"
 toggle_thumb      = "T"
-open_devices      = "d"
 toggle_help       = "?"
+# open_devices    = "d"       # Spotify Connect device picker — unbound by default
 
 # Leader chords — pressing the leader key opens a which-key popup listing the
 # continuations. `g` is the default leader; add new leaders with their own

@@ -39,12 +39,17 @@ terminal.
 
 ## Status
 
-v0.3.0 — Local, radio, SomaFM, Spotify, and YouTube all work end-to-end
-(browse, play, queue, search, control). Synced lyrics (`B`) for local,
-Spotify, and YouTube tracks. Remote sources stream rows into the view as
-each page arrives. macOS media keys + Now Playing widget are wired
-through `MPRemoteCommandCenter`. See
-[CHANGELOG.md](CHANGELOG.md) for the full list.
+v0.4.3 — Local, radio, SomaFM, Spotify, and YouTube all work end-to-end
+(browse, play, queue, search, control). Per-source column layouts with an
+optional column-header bar, inline album-art thumbnails on every row, and
+three now-playing art layouts (`e`: expanded, collapsed, sidebar). Synced
+lyrics (`B`) for local, Spotify, and YouTube tracks. Remote sources stream
+rows into the view as each page arrives. Linux media keys via the MPRIS
+bridge; macOS media keys + Now Playing widget via `MPRemoteCommandCenter`.
+Recent releases add a scroll overhaul (no j/k CPU spike, no key stutter), a
+full-width selection highlight, an idle-CPU fix for headless / no-D-Bus
+sessions, and Kitty-graphics detection fixes for tmux, Ghostty, and
+background panes. See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
 ## Requirements
 
@@ -190,7 +195,7 @@ PulseAudio or PipeWire (both expose a `pulse` device that mixes for you).
 | `z`                  | Toggle shuffle                                 |
 | `x`                  | Cycle repeat (off → all → track)               |
 | `o`                  | Sort modal                                     |
-| `d`                  | Spotify Connect device picker                  |
+| `d`                  | Download hovered track (YouTube)               |
 | `T`                  | Cycle thumbnail mode                           |
 | `t`                  | Cycle active source (Local → Spotify → …)      |
 | `r`                  | Refresh current view                           |
@@ -207,12 +212,12 @@ PulseAudio or PipeWire (both expose a `pulse` device that mixes for you).
 | `v`                  | Expand hovered album art                       |
 | `e`                  | Cycle now-playing art layout (big → small → sidebar) |
 | `B`                  | Toggle synced-lyrics view                      |
-| `Y`                  | Download hovered track (YouTube)               |
 
 Plus leader chords: `g g` (top) and `g {l,s,r,f,y}` to jump to Local /
 Spotify / Radio / SomaFM / YouTube. All keys are user-configurable —
 the example config lists every default explicitly with grouped
-comments.
+comments. The Spotify Connect device picker (`open_devices`) has no
+default key; bind it under `[keybindings.global]` if you want it.
 
 **Mouse**:
 - Click a tab label → switch tab

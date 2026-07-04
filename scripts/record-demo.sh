@@ -19,9 +19,11 @@ REPO_ROOT="$(pwd)"
 # ---- config ----
 FPS_RECORD=30
 FPS_OUT=18
-# SCALE_W=0 means output at native capture resolution (sharper text).
-# Set to a positive width (e.g. 1000) to downscale.
-SCALE_W=0
+# Output GIF width (px); the mp4 keeps native capture resolution. Hi-DPI /
+# retina windows capture at 2500px+, which balloons the GIF far past the 5MB
+# embed budget, so downscale to the README embed width by default. Set to 0
+# for native-resolution output (sharper text, but the GIF can be huge).
+SCALE_W=1000
 DURATION_S=55
 FUGA_BIN="${FUGA_BIN:-fuga}"
 OUT_MP4="$REPO_ROOT/docs/demo.mp4"
@@ -53,10 +55,16 @@ WIN_ID="$WINDOWID"
 # ---- cleanup ----
 FFMPEG_PID=""
 DRIVER_PID=""
+STATE_JSON=""
+STATE_BAK=""
 cleanup() {
     [ -n "$DRIVER_PID" ] && kill "$DRIVER_PID" 2>/dev/null || true
     [ -n "$FFMPEG_PID" ] && kill -INT "$FFMPEG_PID" 2>/dev/null || true
     rm -f "$PALETTE"
+    # Restore the pre-run now-playing art layout (see the state-file reset
+    # below). Runs after fuga has written its own state on quit, so the user's
+    # original layout + pins survive the demo.
+    [ -n "$STATE_BAK" ] && [ -f "$STATE_BAK" ] && mv -f "$STATE_BAK" "$STATE_JSON" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -81,6 +89,21 @@ HEIGHT=$(( HEIGHT - 2 * BORDER ))
 WIDTH=$(( WIDTH - WIDTH % 2 ))
 HEIGHT=$(( HEIGHT - HEIGHT % 2 ))
 echo "==> recording window $WIN_ID: ${WIDTH}x${HEIGHT} at +${X},${Y}"
+
+# ---- pin the now-playing art layout to a known start ----
+# The `e` art-layout cycle (expanded -> collapsed -> sidebar) persists across
+# runs in <data_dir>/state.json. The art sequence below assumes an Expanded
+# start so it can end deterministically on the newer sidebar layout, so back
+# up the state file and remove it (absent -> fuga defaults to Expanded). The
+# cleanup trap restores the original afterward, preserving the user's layout +
+# pins. The path mirrors config data_dir resolution for the common Linux setup;
+# a custom [paths] data_dir isn't covered (harmless: the sequence still shows
+# all three layouts, it just may not end on sidebar).
+STATE_JSON="${XDG_DATA_HOME:-$HOME/.local/share}/fuga/state.json"
+if [ -f "$STATE_JSON" ]; then
+    STATE_BAK="${STATE_JSON}.demobak"
+    cp -p "$STATE_JSON" "$STATE_BAK" && rm -f "$STATE_JSON"
+fi
 
 # ---- start ffmpeg in background ----
 ffmpeg -y -loglevel error \
@@ -140,13 +163,15 @@ FFMPEG_PID=$!
     xdotool key Return
     sleep 3.0
 
-    # --- 5. Resize the now-playing art panel (e): collapse it into the
-    #        bottom bar, then expand back to full size. The expand-back is
-    #        the path that used to render blank — now it repaints. ---
+    # --- 5. Cycle the three now-playing art layouts (e). The state file was
+    #        reset above so fuga starts on Expanded (big cover, bottom-right);
+    #        two presses walk expanded -> collapsed -> sidebar, ending on the
+    #        newer sidebar layout. Step 4's play already lingered on expanded,
+    #        so we linger on collapsed and sidebar here. ---
     xdotool key e
-    sleep 2.0          # collapsed: art shrinks into the bottom bar
+    sleep 2.5          # collapsed: cover shrinks into the bottom bar
     xdotool key e
-    sleep 2.5          # expanded: full-size cover repaints
+    sleep 2.5          # sidebar: full-height right column (ends here)
 
     # --- 6. Synced lyrics: open, then linger while they load and scroll ---
     xdotool key B
@@ -160,13 +185,7 @@ FFMPEG_PID=$!
     xdotool key v               # toggle back
     sleep 0.6
 
-    # --- 8. Spotify Connect device picker (d) ---
-    xdotool key d
-    sleep 2.2
-    xdotool key Escape
-    sleep 0.6
-
-    # --- 9. Toggle inline thumbnails off, then on (T) ---
+    # --- 8. Toggle inline thumbnails off, then on (T) ---
     xdotool key T
     sleep 2.0
     xdotool key T
