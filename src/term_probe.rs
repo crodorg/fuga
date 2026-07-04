@@ -266,12 +266,18 @@ fn kitty_env_present(lookup: impl Fn(&str) -> bool) -> bool {
     // Ghostty exports GHOSTTY_RESOURCES_DIR / GHOSTTY_BIN_DIR; kitty exports
     // KITTY_WINDOW_ID; WezTerm exports WEZTERM_EXECUTABLE / WEZTERM_PANE. All are
     // plain env vars inherited by pane processes, so they persist inside tmux.
+    // FUGA_ASSUME_KITTY is the explicit user override for launch contexts where
+    // no probe can work: tmux routes query replies to the *active* pane, so a
+    // launch in a non-focused pane (or a detached session) can never hear the
+    // terminal answer, and once the event loop owns stdin a late reply would
+    // read as keystrokes — capability must be known up front.
     [
         "GHOSTTY_RESOURCES_DIR",
         "GHOSTTY_BIN_DIR",
         "KITTY_WINDOW_ID",
         "WEZTERM_EXECUTABLE",
         "WEZTERM_PANE",
+        "FUGA_ASSUME_KITTY",
     ]
     .iter()
     .any(|name| lookup(name))
@@ -308,6 +314,8 @@ mod tests {
         assert!(super::kitty_env_present(|n| n == "GHOSTTY_BIN_DIR"));
         assert!(super::kitty_env_present(|n| n == "KITTY_WINDOW_ID"));
         assert!(super::kitty_env_present(|n| n == "WEZTERM_PANE"));
+        // The explicit override for probe-blind launch contexts.
+        assert!(super::kitty_env_present(|n| n == "FUGA_ASSUME_KITTY"));
         // Nothing present, or only tmux-clobbered generics, does not.
         assert!(!super::kitty_env_present(|_| false));
         assert!(!super::kitty_env_present(
