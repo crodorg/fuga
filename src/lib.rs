@@ -95,6 +95,103 @@ impl Cmd {
     }
 }
 
+/// If the surrounding tmux natively renders the kitty graphics protocol,
+/// remove `TMUX` (and `TMUX_PANE`) from our environment so fuga treats the
+/// terminal as non-tmux and emits *raw*, unwrapped kitty — letting tmux cache
+/// and redraw the images itself, exactly like chawan.
+///
+/// Legacy tmux has no kitty awareness, so fuga wraps every kitty escape in a
+/// tmux passthrough (`\x1bPtmux;...`) that goes straight to the outer terminal
+/// and paints via Unicode placeholders. The `ta/kitty-img` branch (tmux
+/// next-3.7+) breaks that model: on every pane redraw it emits an unconditional
+/// kitty delete-all to the outer terminal (`tty_kitty_delete_all`), wiping the
+/// passthrough-transmitted bitmaps — which never entered tmux's own image cache
+/// — so the art vanishes on the first repaint. Such a tmux advertises
+/// `#{image_support}` containing "kitty"; legacy tmux expands it to empty and
+/// keeps `TMUX` (and the whole passthrough path) unchanged.
+///
+/// Detection runs one `tmux display-message` subprocess; it's a no-op outside
+/// tmux. MUST be called from `main` before the tokio runtime spawns any
+/// threads — mutating the process environment is only sound while
+/// single-threaded. The outcome is stashed in [`TMUX_GRAPHICS_DETECT`] and
+/// logged by `run_app` once the tracing subscriber exists (this runs before
+/// logging is set up).
+pub fn neutralize_native_kitty_tmux() {
+    let Some(tmux) = std::env::var_os("TMUX") else {
+        return;
+    };
+    // `$TMUX` is `socket_path,server_pid,session_id`.
+    let tmux = tmux.to_string_lossy();
+    let mut fields = tmux.split(',');
+    let socket = fields.next().unwrap_or("").to_string();
+    let server_pid = fields.next().unwrap_or("");
+
+    // Query clients to try, best first. `#{image_support}` is expanded
+    // server-side, but a *client* that can't connect to (or doesn't know the
+    // format of) a newer server yields nothing — and fuga's PATH `tmux` is
+    // often the stock build, not the one that owns this session. So prefer the
+    // server's OWN binary via `/proc/PID/exe` (Linux): guaranteed version/format
+    // match, and it execs the running binary even if its file was since deleted.
+    // Always `-S <socket>` so we hit the exact server we're in (any `-L`/`-S`
+    // name), never the default-socket fallback. PATH `tmux` is the last resort
+    // (macOS, or no /proc).
+    let mut clients: Vec<String> = Vec::new();
+    if !server_pid.is_empty() && server_pid.bytes().all(|b| b.is_ascii_digit()) {
+        clients.push(format!("/proc/{server_pid}/exe"));
+    }
+    clients.push("tmux".to_string());
+
+    let mut used = String::new();
+    let mut support = String::from("<no tmux client answered>");
+    let mut native = false;
+    for client in &clients {
+        let mut cmd = std::process::Command::new(client);
+        if !socket.is_empty() {
+            cmd.args(["-S", &socket]);
+        }
+        match cmd
+            .args(["display-message", "-p", "#{image_support}"])
+            .output()
+        {
+            Ok(o) if o.status.success() => {
+                used = client.clone();
+                support = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                native = support.contains("kitty");
+                break;
+            }
+            // Connected/spawned but errored, or couldn't spawn: record why and
+            // try the next candidate.
+            Ok(o) => {
+                used = client.clone();
+                support = format!(
+                    "<rc={} {}>",
+                    o.status,
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
+            }
+            Err(e) => {
+                used = client.clone();
+                support = format!("<spawn failed: {e}>");
+            }
+        }
+    }
+    let _ = TMUX_GRAPHICS_DETECT.set(format!(
+        "client={used:?} socket={socket:?} image_support={support:?} native_kitty={native}"
+    ));
+    if native {
+        // SAFETY: called from `main` before the tokio runtime (and every other
+        // thread) exists, so no concurrent getenv/setenv can race this.
+        unsafe {
+            std::env::remove_var("TMUX");
+            std::env::remove_var("TMUX_PANE");
+        }
+    }
+}
+
+/// What [`neutralize_native_kitty_tmux`] found, stashed for `run_app` to log
+/// once tracing is initialised (detection runs before the subscriber exists).
+pub static TMUX_GRAPHICS_DETECT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 /// Run the application: build the sources, the dispatcher, the TUI, and drive
 /// the event loop. The thin binary (`src/main.rs`) calls this after setting up
 /// the tokio runtime. `prebuilt_mpris=Some(..)` is the macOS path (the Cocoa
@@ -148,6 +245,9 @@ pub async fn run_app(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> 
         .init();
 
     tracing::info!("fuga starting");
+    if let Some(detect) = TMUX_GRAPHICS_DETECT.get() {
+        tracing::info!("tmux graphics detection: {detect}");
+    }
 
     // Standalone auth flow: log in to Spotify, persist token, exit.
     if args.spotify_auth {

@@ -6,6 +6,9 @@ use anyhow::{Context, Result};
 
 #[cfg(not(target_os = "macos"))]
 fn main() -> Result<()> {
+    // Must run before the runtime spawns threads (sound env mutation): if the
+    // outer tmux renders kitty natively, drop TMUX so fuga emits raw kitty.
+    fuga::neutralize_native_kitty_tmux();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -21,6 +24,10 @@ fn main() -> Result<()> {
 #[cfg(target_os = "macos")]
 fn main() -> Result<()> {
     use fuga::mpris;
+
+    // Must run before any thread spawns (sound env mutation): if the outer
+    // tmux renders kitty natively, drop TMUX so fuga emits raw kitty.
+    fuga::neutralize_native_kitty_tmux();
 
     // A panic on the async worker thread would otherwise leave NSApp.run
     // looping on the main thread forever — process stays alive but the app is
