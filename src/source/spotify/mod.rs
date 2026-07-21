@@ -107,6 +107,28 @@ impl SpotifySource {
         fut.await.map_err(classify_api_err)
     }
 
+    /// Refresh the Web-API access token if it has expired (or is about to).
+    ///
+    /// rspotify's internal auto-refresh is disabled (`token_refreshing:
+    /// false`, see auth.rs) because it drops the refresh token on responses
+    /// that omit it. Instead, every Web-API entry point calls this first so
+    /// typed rspotify calls never run against a stale token, and the refresh
+    /// goes through `refresh_preserving`, which keeps the refresh token alive.
+    async fn ensure_token_fresh(&self) {
+        let api = self.api.lock().await;
+        let expired = {
+            let Ok(g) = api.token.lock().await else {
+                return;
+            };
+            g.as_ref().map(|t| t.is_expired()).unwrap_or(false)
+        };
+        if expired {
+            if let Err(e) = auth::refresh_preserving(&api).await {
+                tracing::warn!("spotify token refresh failed: {e}");
+            }
+        }
+    }
+
     async fn ensure_player(&self) -> Result<()> {
         {
             let g = self.player.lock().await;
@@ -127,7 +149,7 @@ impl SpotifySource {
             // Trigger refresh if expired.
             if let Ok(Some(t)) = api.read_token_cache(true).await {
                 if t.is_expired() {
-                    if let Err(e) = api.refresh_token().await {
+                    if let Err(e) = auth::refresh_preserving(&api).await {
                         tracing::warn!("rspotify refresh: {e}");
                     }
                 }
@@ -1622,6 +1644,7 @@ impl MusicSource for SpotifySource {
         if query.is_empty() {
             return Ok(Vec::new());
         }
+        self.ensure_token_fresh().await;
         tracing::info!("spotify search start: q={query:?}");
         // Mirror spotatui:
         //   * 5 result kinds: Track, Album, Playlist, Show, Artist.
@@ -1799,6 +1822,7 @@ impl MusicSource for SpotifySource {
                 cache::CacheHit::Stale(_) | cache::CacheHit::Miss => {}
             }
         }
+        self.ensure_token_fresh().await;
         let result = self.browse_uncached(path).await;
         if let Ok(ref entries) = result {
             if cache::is_cacheable(path) {
@@ -1862,6 +1886,7 @@ impl MusicSource for SpotifySource {
         // Other paginated paths fall through to the single-batch default
         // until we have time to convert each one's per-item builder into
         // a shareable helper.
+        self.ensure_token_fresh().await;
         let (base, offset) = parse_offset(path);
         if base != "spotify:view:saved_albums" {
             let _ = tx.send(self.browse(path).await).await;
@@ -2060,6 +2085,7 @@ impl MusicSource for SpotifySource {
         // Spotify is consolidating `me/tracks/*` into `me/library/*`; the
         // older per-type endpoints now 403 for non-allowlisted apps.
         // rspotify's `library_contains` uses the new endpoint.
+        self.ensure_token_fresh().await;
         let id = TrackId::from_id_or_uri(uri).context("track id")?;
         let api = self.api.lock().await;
         let res: Vec<bool> = self
@@ -2073,6 +2099,7 @@ impl MusicSource for SpotifySource {
         if !uri.starts_with("spotify:track:") {
             return Ok(());
         }
+        self.ensure_token_fresh().await;
         let id = TrackId::from_id_or_uri(uri).context("track id")?;
         let api = self.api.lock().await;
         self.governed(api.library_add([rspotify::model::LibraryId::Track(id)]))
@@ -2085,6 +2112,7 @@ impl MusicSource for SpotifySource {
         if !uri.starts_with("spotify:track:") {
             return Ok(());
         }
+        self.ensure_token_fresh().await;
         let id = TrackId::from_id_or_uri(uri).context("track id")?;
         let api = self.api.lock().await;
         self.governed(api.library_remove([rspotify::model::LibraryId::Track(id)]))
@@ -2104,6 +2132,7 @@ impl MusicSource for SpotifySource {
     }
 
     async fn list_devices(&self) -> Result<Vec<DeviceEntry>> {
+        self.ensure_token_fresh().await;
         let api = self.api.lock().await;
         let devs = self
             .governed(api.device())
@@ -2125,6 +2154,7 @@ impl MusicSource for SpotifySource {
     }
 
     async fn relation_uri(&self, track_uri: &str, kind: &str) -> Result<String> {
+        self.ensure_token_fresh().await;
         let id = TrackId::from_id_or_uri(track_uri).context("track id")?;
         let api = self.api.lock().await;
         let track = api.track(id, None).await.context("spotify track fetch")?;
@@ -2151,6 +2181,7 @@ impl MusicSource for SpotifySource {
     async fn add_to_playlist(&self, playlist_uri: &str, track_uri: &str) -> Result<()> {
         use rspotify::model::{PlayableId, PlaylistId};
         let pid = PlaylistId::from_id_or_uri(playlist_uri).context("playlist id")?;
+        self.ensure_token_fresh().await;
         let tid = TrackId::from_id_or_uri(track_uri).context("track id")?;
         let api = self.api.lock().await;
         self.governed(api.playlist_add_items(pid, [PlayableId::Track(tid)], None))
@@ -2162,6 +2193,7 @@ impl MusicSource for SpotifySource {
     async fn remove_from_playlist(&self, playlist_uri: &str, track_uri: &str) -> Result<()> {
         use rspotify::model::{PlayableId, PlaylistId};
         let pid = PlaylistId::from_id_or_uri(playlist_uri).context("playlist id")?;
+        self.ensure_token_fresh().await;
         let tid = TrackId::from_id_or_uri(track_uri).context("track id")?;
         let api = self.api.lock().await;
         self.governed(api.playlist_remove_all_occurrences_of_items(
@@ -2175,6 +2207,7 @@ impl MusicSource for SpotifySource {
     }
 
     async fn transfer_to_device(&self, device_id: &str) -> Result<()> {
+        self.ensure_token_fresh().await;
         let api = self.api.lock().await;
         self.governed(api.transfer_playback(device_id, Some(true)))
             .await

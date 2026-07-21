@@ -15,7 +15,6 @@
 
 use anyhow::{Context, Result, anyhow};
 use rspotify::AuthCodePkceSpotify;
-use rspotify::clients::BaseClient;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -98,7 +97,9 @@ pub async fn get_normalized<T: DeserializeOwned>(
         }
 
         if status == reqwest::StatusCode::UNAUTHORIZED && !refreshed {
-            api.refresh_token().await.context("spotify token refresh")?;
+            super::auth::refresh_preserving(api)
+                .await
+                .context("spotify token refresh")?;
             refreshed = true;
             continue;
         }
@@ -204,7 +205,9 @@ async fn no_body_method(
             return Ok(());
         }
         if status == reqwest::StatusCode::UNAUTHORIZED && !refreshed {
-            api.refresh_token().await.context("spotify token refresh")?;
+            super::auth::refresh_preserving(api)
+                .await
+                .context("spotify token refresh")?;
             refreshed = true;
             continue;
         }

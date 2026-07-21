@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow};
 use rspotify::clients::OAuthClient;
-use rspotify::{AuthCodePkceSpotify, Config, Credentials, OAuth, prelude::BaseClient, scopes};
+use rspotify::{
+    AuthCodePkceSpotify, Config, Credentials, OAuth, Token, prelude::BaseClient, scopes,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use url::Url;
@@ -41,7 +43,12 @@ pub fn build_client(
     let config = Config {
         cache_path,
         token_cached: true,
-        token_refreshing: true,
+        // Disable rspotify's internal auto-refresh: it calls the plain
+        // `refresh_token()`, which overwrites the cached token wholesale and
+        // drops the refresh token whenever Spotify's PKCE refresh response
+        // omits it (see `refresh_preserving`). We drive every refresh through
+        // `refresh_preserving` instead, gated by `ensure_token_fresh`.
+        token_refreshing: false,
         ..Default::default()
     };
     AuthCodePkceSpotify::with_config(creds, oauth, config)
@@ -77,7 +84,7 @@ pub async fn load_cached_token(client: &AuthCodePkceSpotify) -> Result<bool> {
             *client.token.lock().await.unwrap() = Some(token.clone());
             // If expired, ask for a refresh.
             if token.is_expired() {
-                if let Err(e) = client.refresh_token().await {
+                if let Err(e) = refresh_preserving(client).await {
                     tracing::warn!("token refresh failed: {e}; need re-auth");
                     return Ok(false);
                 }
@@ -89,6 +96,64 @@ pub async fn load_cached_token(client: &AuthCodePkceSpotify) -> Result<bool> {
             tracing::warn!("token cache unreadable: {e}");
             Ok(false)
         }
+    }
+}
+
+/// Refresh the access token while preserving the refresh token across refresh
+/// responses that omit it.
+///
+/// Spotify's PKCE refresh may return `200 OK` without a `refresh_token`
+/// ("When a refresh token is not returned, continue using the existing token"
+/// — Spotify Web API docs), but rspotify 0.16.1 replaces the whole cached
+/// token with the response, dropping the refresh token to `None`. After that
+/// no further refresh is possible and Spotify silently goes dead until the
+/// user re-authenticates. Snapshot the old refresh token and, if the refreshed
+/// token came back without one, restore it and rewrite the cache.
+pub async fn refresh_preserving(client: &AuthCodePkceSpotify) -> Result<()> {
+    let prev = client
+        .token
+        .lock()
+        .await
+        .map_err(|_| anyhow!("rspotify token mutex poisoned"))?
+        .as_ref()
+        .and_then(|t| t.refresh_token.clone());
+    client
+        .refresh_token()
+        .await
+        .context("spotify token refresh")?;
+    let restored = {
+        let mut g = client
+            .token
+            .lock()
+            .await
+            .map_err(|_| anyhow!("rspotify token mutex poisoned"))?;
+        match g.as_mut() {
+            Some(t) => preserve_refresh_token(t, prev),
+            None => false,
+        }
+    };
+    if restored {
+        client
+            .write_token_cache()
+            .await
+            .context("rewrite token cache after refresh-token restore")?;
+        tracing::info!(
+            "spotify: refresh response omitted refresh_token; preserved the existing one"
+        );
+    }
+    Ok(())
+}
+
+/// If a refresh response dropped the refresh token, restore the previous one.
+/// Returns true when a restore happened, so the caller knows to rewrite the
+/// token cache. Pure so it can be unit-tested without a live Spotify session.
+fn preserve_refresh_token(tok: &mut Token, prev: Option<String>) -> bool {
+    match (tok.refresh_token.is_none(), prev) {
+        (true, Some(rt)) => {
+            tok.refresh_token = Some(rt);
+            true
+        }
+        _ => false,
     }
 }
 
@@ -156,4 +221,43 @@ async fn wait_for_code(port: u16, expected_state: &str) -> Result<String> {
         return Err(anyhow!("state mismatch in redirect"));
     }
     code.ok_or_else(|| anyhow!("no `code` parameter in redirect"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restores_dropped_refresh_token() {
+        // Spotify PKCE refresh omitted the refresh token: restore the old one.
+        let mut tok = Token {
+            refresh_token: None,
+            ..Default::default()
+        };
+        let restored = preserve_refresh_token(&mut tok, Some("old-rt".into()));
+        assert!(restored);
+        assert_eq!(tok.refresh_token.as_deref(), Some("old-rt"));
+    }
+
+    #[test]
+    fn keeps_rotated_refresh_token() {
+        // Refresh returned a fresh token: don't clobber it, don't rewrite cache.
+        let mut tok = Token {
+            refresh_token: Some("new-rt".into()),
+            ..Default::default()
+        };
+        let restored = preserve_refresh_token(&mut tok, Some("old-rt".into()));
+        assert!(!restored);
+        assert_eq!(tok.refresh_token.as_deref(), Some("new-rt"));
+    }
+
+    #[test]
+    fn no_previous_token_nothing_to_restore() {
+        let mut tok = Token {
+            refresh_token: None,
+            ..Default::default()
+        };
+        assert!(!preserve_refresh_token(&mut tok, None));
+        assert!(tok.refresh_token.is_none());
+    }
 }
