@@ -81,6 +81,18 @@ pub fn harden_token_file(path: &std::path::Path) {
 pub async fn load_cached_token(client: &AuthCodePkceSpotify) -> Result<bool> {
     match client.read_token_cache(true).await {
         Ok(Some(token)) => {
+            // A cached token without a refresh token can't be renewed: it dies
+            // within the hour and every Spotify call then fails with an opaque
+            // `InvalidToken`. Refuse it and force a clean re-auth rather than
+            // limping on. (This is the exact trap a pre-guard build could leave
+            // behind — see `refresh_preserving`.)
+            if token.refresh_token.is_none() {
+                tracing::warn!(
+                    "cached Spotify token has no refresh_token; it can't be renewed \
+                     and would die within the hour — run `fuga --spotify-auth` to re-authorize"
+                );
+                return Ok(false);
+            }
             *client.token.lock().await.unwrap() = Some(token.clone());
             // If expired, ask for a refresh.
             if token.is_expired() {
@@ -140,6 +152,22 @@ pub async fn refresh_preserving(client: &AuthCodePkceSpotify) -> Result<()> {
         tracing::info!(
             "spotify: refresh response omitted refresh_token; preserved the existing one"
         );
+    }
+    // Invariant: a refresh must never leave us without a refresh token. If it
+    // did and there was none to restore, the account goes dead within the hour
+    // — surface it loudly as an error instead of silently persisting a token
+    // that only lasts one more cycle.
+    let has_refresh = client
+        .token
+        .lock()
+        .await
+        .map_err(|_| anyhow!("rspotify token mutex poisoned"))?
+        .as_ref()
+        .is_some_and(|t| t.refresh_token.is_some());
+    if !has_refresh {
+        return Err(anyhow!(
+            "spotify refresh produced a token without a refresh_token; re-auth required"
+        ));
     }
     Ok(())
 }

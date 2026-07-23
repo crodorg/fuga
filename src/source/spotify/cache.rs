@@ -7,9 +7,10 @@
 //!
 //! Strategy: serialize each browse result to `<dir>/<sha256(path)>.json`,
 //! mirror the most-recent entries in a small in-memory LRU. On `get`, return
-//! `Fresh` if the entry is < 5 minutes old, `Stale` if older (caller decides
-//! to refetch synchronously and replace), `Miss` if the path was never
-//! cached.
+//! `Fresh` if the entry is within FRESH_TTL (1h), `Stale` if older (caller
+//! decides to refetch synchronously and replace), `Miss` if the path was never
+//! cached. Empty results are never persisted — they're almost always a
+//! transient failure, and caching one would blank the view for FRESH_TTL.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -101,6 +102,15 @@ impl BrowseCache {
     }
 
     pub async fn put(&self, key: &str, entries: Vec<Entry>) -> Result<()> {
+        // Never persist an empty result. A `browse` that failed transiently
+        // (auth error, rate-limit, dropped stream) returns `Ok(vec![])`, and
+        // caching that would serve a blank view as `Fresh` for FRESH_TTL (1h)
+        // even after the fault clears — the bug behind "playlists show 0 after
+        // a bad token". A genuinely empty view just re-walks the API next open,
+        // which is cheap and rare.
+        if entries.is_empty() {
+            return Ok(());
+        }
         let entry = CachedEntry {
             fetched_at: SystemTime::now(),
             entries,
@@ -218,4 +228,53 @@ pub fn is_cacheable(path: &str) -> bool {
         // to FRESH_TTL even after the background hydrate filled the full
         // cache.
         && !path.starts_with("spotify:playlist:")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{Entry, EntryKind};
+
+    fn tmp_cache() -> BrowseCache {
+        let dir = std::env::temp_dir().join(format!(
+            "fuga-cache-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        BrowseCache::new(dir, 8)
+    }
+
+    fn sample() -> Vec<Entry> {
+        vec![Entry {
+            uri: "spotify:playlist:x".into(),
+            label: "x".into(),
+            kind: EntryKind::Playlist,
+            display: None,
+        }]
+    }
+
+    #[tokio::test]
+    async fn empty_result_is_not_persisted() {
+        // Regression: a failed browse returns Ok(vec![]); caching it would
+        // serve a blank view as Fresh for an hour. put() must drop empties.
+        let c = tmp_cache();
+        c.put("spotify:view:playlists", vec![]).await.unwrap();
+        assert!(matches!(
+            c.get("spotify:view:playlists").await,
+            CacheHit::Miss
+        ));
+    }
+
+    #[tokio::test]
+    async fn non_empty_result_is_fresh() {
+        let c = tmp_cache();
+        c.put("spotify:view:playlists", sample()).await.unwrap();
+        assert!(matches!(
+            c.get("spotify:view:playlists").await,
+            CacheHit::Fresh(v) if v.len() == 1
+        ));
+    }
 }

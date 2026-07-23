@@ -1811,11 +1811,11 @@ impl MusicSource for SpotifySource {
     }
 
     async fn browse(&self, path: &str) -> Result<Vec<Entry>> {
-        // Cache layer: instant hit for fresh entries (< 5 min). Stale and
-        // miss both fall through to the live API walk; we then refresh the
-        // cache with the new entries. No background refetch in this rev —
-        // stale paths re-pay one API walk every TTL window, but the cost is
-        // bounded and tab switches stay snappy in the common case.
+        // Cache layer: instant hit for fresh entries (within FRESH_TTL, 1h).
+        // Stale and miss both fall through to the live API walk; we then
+        // refresh the cache with the new entries. No background refetch in
+        // this rev — stale paths re-pay one API walk every TTL window, but the
+        // cost is bounded and tab switches stay snappy in the common case.
         if cache::is_cacheable(path) {
             match self.browse_cache.get(path).await {
                 cache::CacheHit::Fresh(e) => return Ok(e),
