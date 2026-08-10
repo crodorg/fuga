@@ -26,6 +26,11 @@ pub enum SpotifyEvent {
     Playing,
     Paused,
     Error(String),
+    /// The session's playback credential was rejected by Spotify's login5
+    /// exchange — no track can load until the user re-authorizes. Distinct
+    /// from `Error` so the queue halts at once instead of skipping through
+    /// every remaining item.
+    AuthRejected,
 }
 
 /// Snapshot of librespot playback position. Updated whenever librespot fires
@@ -135,6 +140,7 @@ impl SpotifyPlayer {
         let position_for_task = position.clone();
         let duration_for_task = duration_ms.clone();
         let state_for_task = state.clone();
+        let session_for_task = session.clone();
 
         let mut event_rx = player.get_player_event_channel();
         let events_task = tokio::spawn(async move {
@@ -186,7 +192,17 @@ impl SpotifyPlayer {
                     PlayerEvent::Playing { .. } => Some(SpotifyEvent::Playing),
                     PlayerEvent::Paused { .. } => Some(SpotifyEvent::Paused),
                     PlayerEvent::Unavailable { .. } => {
-                        Some(SpotifyEvent::Error("track unavailable".into()))
+                        // Tell a genuinely unplayable track apart from a dead
+                        // credential. The login5 token lives in the session, so
+                        // this only touches the network once it has expired or
+                        // been rejected.
+                        match session_for_task.login5().auth_token().await {
+                            Ok(_) => Some(SpotifyEvent::Error("track unavailable".into())),
+                            Err(e) => {
+                                tracing::warn!("spotify playback auth rejected: {e}");
+                                Some(SpotifyEvent::AuthRejected)
+                            }
+                        }
                     }
                     _ => None,
                 };

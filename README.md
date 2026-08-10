@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust 2024](https://img.shields.io/badge/edition-2024-dea584.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey.svg)](#)
-[![Status](https://img.shields.io/badge/status-v0.4.3-orange.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-v0.4.4-orange.svg)](CHANGELOG.md)
 
 Terminal-native music library aggregator. One TUI, one queue, many sources:
 local files (via MPD), internet radio, SomaFM, Spotify, YouTube. Inline
@@ -39,7 +39,7 @@ terminal.
 
 ## Status
 
-v0.4.3 — Local, radio, SomaFM, Spotify, and YouTube all work end-to-end
+v0.4.4 — Local, radio, SomaFM, Spotify, and YouTube all work end-to-end
 (browse, play, queue, search, control). Per-source column layouts with an
 optional column-header bar, inline album-art thumbnails on every row, and
 three now-playing art layouts (`e`: expanded, collapsed, sidebar). Synced
@@ -161,8 +161,12 @@ Quick version:
 1. Create an app at <https://developer.spotify.com/dashboard>. Add
    `http://127.0.0.1:8888/callback` to the app's redirect URIs.
 2. Set `[spotify] enabled = true` and `client_id = "..."` in your config.
-3. Run `fuga --spotify-auth` once. A browser opens; approve. Token persists
-   at `~/.local/share/fuga/spotify_tokens.json` (mode 0600).
+3. Run `fuga --spotify-auth` once. Two browser approvals follow: your own
+   app (Web API — browsing, search, playlists), then Spotify's desktop
+   client id (the audio session — Spotify only lets its own client stream).
+   The Web API token persists at `~/.local/share/fuga/spotify_tokens.json`
+   and the playback credential at `~/.local/share/fuga/librespot/`
+   (both mode 0600).
 4. Run `fuga` normally.
 
 Stuck? `cat docs/spotify-setup.md` (or read it on
@@ -303,6 +307,11 @@ parallel; results are grouped by source. `j`/`k` to navigate, Enter to play.
 - **Spotify auth fails** — delete `~/.local/share/fuga/spotify_tokens.json`
   and re-run `fuga --spotify-auth`. Confirm the redirect URI in your Spotify
   developer dashboard matches `redirect_port` in your config.
+- **"Spotify playback auth rejected" / "Spotify playback not authed"** — the
+  audio session has its own credential, separate from the Web API token, at
+  `~/.local/share/fuga/librespot/`. Re-run `fuga --spotify-auth` and approve
+  the second browser prompt. Browsing keeps working without it; playback
+  doesn't.
 - **MPD connection error on startup** — `mpc status` to verify MPD is
   running, then `mpc update` to make sure it sees your library.
 - **Phone doesn't see fuga as a Spotify Connect device** — you need a

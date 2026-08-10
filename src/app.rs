@@ -4023,6 +4023,13 @@ impl App {
             SpotifyEvent::Paused => self.set_status("spotify: paused"),
             SpotifyEvent::Stopped => {}
             SpotifyEvent::Loading => self.set_status("spotify: loading"),
+            SpotifyEvent::AuthRejected => {
+                // Not a bad track: the playback credential is dead, so every
+                // remaining item would fail the same way. Halt on the first
+                // one and name the fix.
+                self.consecutive_play_failures = 0;
+                self.set_status("Spotify playback auth rejected — run `fuga --spotify-auth`");
+            }
             SpotifyEvent::Error(s) => {
                 // A track failed to start (librespot Unavailable: a CDN 530 with
                 // no fallback in librespot 0.8.0, a region restriction, or a load

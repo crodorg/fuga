@@ -299,6 +299,20 @@ pub struct SpotifyConfig {
    `$XDG_DATA_HOME/fuga/spotify_tokens.json` (mode 0600).
 6. Refresh proactively when the token has less than 5 minutes left.
 
+**Two logins, not one.** The token above drives the Web API only. Playback
+authenticates separately, through librespot's own OAuth flow (Spotify's
+desktop client id, redirect `127.0.0.1:8898/login`), and `--spotify-auth`
+runs both back to back. The reason is server-side: librespot trades session
+credentials for an spclient token at `login5.spotify.com`, and that exchange
+only accepts credentials whose originating client id matches the requesting
+one — credentials derived from a third-party app token are refused with
+`INVALID_CREDENTIALS` (enforced from 2026-08-10), which surfaces as every
+track failing to load at 0:00. The reusable credential librespot returns is
+cached at `$XDG_DATA_HOME/fuga/librespot/credentials.json` (mode 0600) and
+does not expire, so the second login runs once. `SpotifyPlayer::connect`
+pre-flights the login5 exchange to turn a revoked credential into one clear
+"run `fuga --spotify-auth`" message instead of a run of skipped tracks.
+
 Reuse `rspotify::AuthCodeSpotify` if the PKCE flow fits; if it requires a
 callback closure that doesn't compose with the event loop, write the flow
 directly with `reqwest` + `serde_json`.

@@ -58,6 +58,12 @@ Optional knobs:
 fuga --spotify-auth
 ```
 
+This authorizes **two** things, in order: your app for the Web API
+(browsing, search, playlists) and the audio session itself. They are
+separate because Spotify's playback handshake only accepts credentials
+issued to its own desktop client — a third-party app id can browse, but
+it can no longer stream.
+
 What happens:
 
 1. fuga prints an authorize URL and opens it in your default browser
@@ -68,11 +74,17 @@ What happens:
 3. Spotify redirects to `http://127.0.0.1:8888/callback?code=...`.
    fuga's local listener catches it, exchanges the code for an
    access + refresh token, writes the pair to
-   `~/.local/share/fuga/spotify_tokens.json` (mode 0600), and exits.
+   `~/.local/share/fuga/spotify_tokens.json` (mode 0600).
 4. The browser tab shows "fuga: auth complete; close this tab."
+5. A **second** authorize page opens, this time for the playback
+   session (redirect `http://127.0.0.1:8898/login`). Approve it too.
+   fuga stores the reusable session credential it returns in
+   `~/.local/share/fuga/librespot/credentials.json` (mode 0600), then
+   exits.
 
 You only do this once. From then on `fuga` (no flag) auto-loads the
-cached token and refreshes it as needed.
+cached token and refreshes it as needed; the playback credential does
+not expire.
 
 ## 4. Verify
 
@@ -102,6 +114,12 @@ URI to a free port. Both must match.
 missing or unreadable. Re-run `fuga --spotify-auth` to recreate it.
 The cache lives at `$XDG_DATA_HOME/fuga/spotify_tokens.json`
 (usually `~/.local/share/fuga/`).
+
+**"Spotify playback not authed" / "Spotify playback auth rejected —
+run `fuga --spotify-auth`".** Browsing works but tracks won't load:
+the playback credential (`$XDG_DATA_HOME/fuga/librespot/credentials.json`)
+is missing, or Spotify rejected it because access was revoked. Re-run
+`fuga --spotify-auth` and approve the second browser prompt.
 
 **Playback transfer fails / "no active device".** Spotify Connect
 requires an active device. With Premium you can transfer from the

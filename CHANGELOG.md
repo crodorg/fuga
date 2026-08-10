@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] — 2026-08-10
+
+### Fixed
+
+- **Spotify playback works again.** Every track failed to load at 0:00
+  ("playback halted: N tracks failed in a row"). Spotify's playback handshake
+  now only accepts session credentials issued to its own desktop client, so
+  the Web API token fuga passed to librespot was rejected with
+  `INVALID_CREDENTIALS`. `fuga --spotify-auth` now authorizes playback
+  separately, through librespot's own OAuth flow, and caches the reusable
+  credential it returns at `~/.local/share/fuga/librespot/credentials.json`
+  (mode 0600). It does not expire — the extra approval is one-time. Your own
+  `client_id` still fronts every Web API call.
+- **A dead playback credential says so.** fuga verifies the playback token
+  exchange when the session connects and reports
+  "Spotify playback auth rejected — run `fuga --spotify-auth`" instead of
+  skipping through the queue one unplayable track at a time. A missing
+  credential is flagged at startup; browsing still works without it.
+
 ## [0.4.3] — 2026-07-04
 
 ### Fixed
