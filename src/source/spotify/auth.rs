@@ -1,6 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
+use librespot::core::authentication::Credentials as SessionCredentials;
+use librespot::core::cache::Cache as LibrespotCache;
+use librespot::core::config::SessionConfig;
+use librespot::core::session::Session;
+use librespot::oauth::OAuthClientBuilder;
 use rspotify::clients::OAuthClient;
 use rspotify::{
     AuthCodePkceSpotify, Config, Credentials, OAuth, Token, prelude::BaseClient, scopes,
@@ -24,6 +29,81 @@ const SCOPES: &[&str] = &[
     "playlist-modify-public",
     "playlist-modify-private",
 ];
+
+/// Loopback port for librespot's OAuth redirect. Spotify's desktop client id
+/// accepts any 127.0.0.1 port on the `/login` path (OAuth loopback rule), so
+/// this needs no registration — it only has to be free while `--spotify-auth`
+/// runs.
+const LIBRESPOT_REDIRECT_PORT: u16 = 8898;
+
+/// Scopes requested for the playback session. Kept to the set proven to yield
+/// login5-acceptable credentials; the Web-API client carries its own scopes.
+const LIBRESPOT_SCOPES: &[&str] = &[
+    "app-remote-control",
+    "playlist-read",
+    "playlist-read-private",
+    "streaming",
+    "user-library-read",
+    "user-read-email",
+    "user-read-private",
+];
+
+/// librespot's credential cache: reusable session credentials only — no volume
+/// file, no audio cache (fuga streams; MPD owns local files).
+pub fn librespot_cache(data_dir: &Path) -> Result<LibrespotCache> {
+    let dir = data_dir.join("librespot");
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    LibrespotCache::new::<&Path>(Some(&dir), None, None, None)
+        .map_err(|e| anyhow!("librespot credential cache: {e}"))
+}
+
+/// Path of the cached playback credentials inside `librespot_cache`.
+pub fn librespot_credentials_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("librespot").join("credentials.json")
+}
+
+/// Authorize the *playback* session — a second, separate login from the
+/// Web-API one, run once by `--spotify-auth`.
+///
+/// librespot turns session credentials into the token spclient needs to fetch
+/// audio through Spotify's login5 endpoint, and login5 only accepts stored
+/// credentials whose originating client id matches the one asking. Since
+/// 2026-08-10 Spotify rejects credentials derived from a third-party app token
+/// with INVALID_CREDENTIALS, so the Web-API token can no longer drive playback
+/// (every track then fails to load at 0:00). Take a token through librespot's
+/// own client id instead and cache the reusable credentials it yields; those
+/// don't expire, so this never runs again unless the user revokes access.
+pub async fn librespot_login(data_dir: &Path) -> Result<()> {
+    let cache = librespot_cache(data_dir)?;
+    let client_id = SessionConfig::default().client_id;
+    let redirect = format!("http://127.0.0.1:{LIBRESPOT_REDIRECT_PORT}/login");
+    println!("\nfuga: authorizing Spotify playback (a second login, for the audio session):\n");
+    // The OAuth helper is blocking (it binds the redirect listener and waits).
+    let token = tokio::task::spawn_blocking(move || {
+        OAuthClientBuilder::new(&client_id, &redirect, LIBRESPOT_SCOPES.to_vec())
+            .open_in_browser()
+            .build()?
+            .get_access_token()
+    })
+    .await
+    .context("librespot OAuth task")?
+    .map_err(|e| anyhow!("librespot OAuth: {e}"))?;
+
+    let session = Session::new(SessionConfig::default(), Some(cache));
+    session
+        .connect(
+            SessionCredentials::with_access_token(token.access_token),
+            true,
+        )
+        .await
+        .map_err(|e| anyhow!("librespot session connect: {e}"))?;
+    session.shutdown();
+    // The blob is full account access; librespot writes it with the process
+    // umask, same trap as the Web-API token cache.
+    harden_token_file(&librespot_credentials_path(data_dir));
+    println!("fuga: Spotify playback authorized; session credentials cached.");
+    Ok(())
+}
 
 pub fn build_client(
     client_id: &str,

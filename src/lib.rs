@@ -273,6 +273,9 @@ pub async fn run_app(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> 
         spotify_auth::interactive_login(&mut client, config.spotify.redirect_port).await?;
         // The interactive flow just wrote the token cache — restrict it to 0600.
         spotify_auth::harden_token_file(&token_path);
+        // Playback needs its own credentials: Spotify's login5 no longer
+        // accepts ones derived from a third-party app token.
+        spotify_auth::librespot_login(&data_dir).await?;
         return Ok(());
     }
 
@@ -352,8 +355,16 @@ pub async fn run_app(prebuilt_mpris: Option<mpris::MprisHandles>) -> Result<()> 
                     spotify_event_tx.clone(),
                     browse_cache,
                     data_dir.join("spotify_ratelimit.json"),
+                    data_dir.clone(),
                 ));
                 dispatcher.register(spotify as Arc<dyn MusicSource>);
+                // Browsing works off the Web-API token, but playback needs the
+                // separate librespot credentials — say so up front instead of
+                // failing at the first play.
+                if !spotify_auth::librespot_credentials_path(&data_dir).exists() {
+                    spotify_status =
+                        Some("Spotify playback not authed — run `fuga --spotify-auth`".into());
+                }
             }
             Ok(false) => {
                 tracing::warn!(

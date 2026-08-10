@@ -3,7 +3,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use librespot::core::SpotifyUri;
-use librespot::core::authentication::Credentials;
 use librespot::core::config::SessionConfig;
 use librespot::core::session::Session;
 use librespot::core::spotify_id::SpotifyId;
@@ -63,7 +62,7 @@ pub struct SpotifyPlayer {
 
 impl SpotifyPlayer {
     pub async fn connect(
-        access_token: &str,
+        cache: librespot::core::cache::Cache,
         config: &SpotifyConfig,
         events: UnboundedSender<SpotifyEvent>,
     ) -> Result<Self> {
@@ -71,8 +70,13 @@ impl SpotifyPlayer {
             device_id: device_id(&config.device_name),
             ..SessionConfig::default()
         };
-        let session = Session::new(session_config, None);
-        let credentials = Credentials::with_access_token(access_token);
+        // Playback authenticates with its own cached credentials, NOT the
+        // Web-API token: Spotify's login5 rejects credentials derived from a
+        // third-party app token (see auth::librespot_login).
+        let credentials = cache.credentials().ok_or_else(|| {
+            anyhow!("Spotify playback not authorized — run `fuga --spotify-auth`")
+        })?;
+        let session = Session::new(session_config, Some(cache));
         // Authenticate the session directly. fuga drives the Player itself and
         // manages its own unified cross-source queue, so it deliberately does
         // NOT run librespot's Spirc (Spotify Connect) controller. Spirc keeps a
@@ -85,9 +89,15 @@ impl SpotifyPlayer {
         // devices via the Web API device picker still works). See decisions.md
         // 2026-06-26.
         session
-            .connect(credentials, false)
+            .connect(credentials, true)
             .await
             .map_err(|e| anyhow!("librespot session connect: {e}"))?;
+        // Pre-flight the login5 token exchange that every audio-item load
+        // needs. Without it a rejected credential only shows up as a run of
+        // "track unavailable" skips once the user hits play.
+        session.login5().auth_token().await.map_err(|e| {
+            anyhow!("Spotify playback auth rejected ({e}) — run `fuga --spotify-auth`")
+        })?;
 
         let bitrate = parse_bitrate(config.resolved_bitrate());
         let player_config = PlayerConfig {

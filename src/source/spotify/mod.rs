@@ -46,6 +46,8 @@ pub struct SpotifySource {
     /// Disk + LRU cache of `browse()` results. Reduces first-open latency
     /// after the initial paginated walk has been persisted.
     browse_cache: Arc<crate::source::spotify::cache::BrowseCache>,
+    /// fuga's data dir; holds librespot's cached playback credentials.
+    data_dir: std::path::PathBuf,
 }
 
 /// Map an rspotify error into anyhow, engaging the rate-limit gate on a 429.
@@ -77,6 +79,7 @@ impl SpotifySource {
         events_tx: UnboundedSender<SpotifyEvent>,
         browse_cache: Arc<crate::source::spotify::cache::BrowseCache>,
         ratelimit_path: std::path::PathBuf,
+        data_dir: std::path::PathBuf,
     ) -> Self {
         // Initialize the process-global Web-API governor with its persistence
         // path so a multi-hour rate-limit cooldown survives a restart.
@@ -88,6 +91,7 @@ impl SpotifySource {
             player: Mutex::new(None),
             events_tx,
             browse_cache,
+            data_dir,
         }
     }
 
@@ -143,26 +147,8 @@ impl SpotifySource {
         }
         // Drop any dead player before building a fresh one.
         *self.player.lock().await = None;
-        // Need a fresh access token from rspotify.
-        let access_token = {
-            let api = self.api.lock().await;
-            // Trigger refresh if expired.
-            if let Ok(Some(t)) = api.read_token_cache(true).await {
-                if t.is_expired() {
-                    if let Err(e) = auth::refresh_preserving(&api).await {
-                        tracing::warn!("rspotify refresh: {e}");
-                    }
-                }
-            }
-            let tg = api.token.lock().await;
-            let tg = tg.map_err(|_| anyhow!("rspotify token mutex poisoned"))?;
-            let t = tg
-                .as_ref()
-                .ok_or_else(|| anyhow!("no Spotify access token; run --spotify-auth"))?;
-            t.access_token.clone()
-        };
-        let player =
-            SpotifyPlayer::connect(&access_token, &self.config, self.events_tx.clone()).await?;
+        let cache = auth::librespot_cache(&self.data_dir)?;
+        let player = SpotifyPlayer::connect(cache, &self.config, self.events_tx.clone()).await?;
         *self.player.lock().await = Some(player);
         Ok(())
     }
